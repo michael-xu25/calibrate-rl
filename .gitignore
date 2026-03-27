@@ -52,3 +52,11 @@ Thumbs.db
 # Ray
 /tmp/ray/
 ray_results/
+
+# Office documents (pitch decks, planning docs)
+*.docx
+*.pptx
+*.xlsx
+*.doc
+*.ppt
+*.xls

@@ -1,0 +1,28 @@
+2026-02-15 19:37:54,127 [INFO] === Run started: 20260215_193740 ===
+2026-02-15 19:37:54,127 [INFO] Log file: ./logs/run_20260215_193740.log
+2026-02-15 19:37:54,127 [INFO] Loading entity-tracking dataset ...
+2026-02-15 19:37:54,141 [INFO] Dataset loaded: 2230 entity-tracking problems
+2026-02-15 19:37:54,263 [INFO] Config:
+2026-02-15 19:37:54,263 [INFO]   Model:            Qwen/Qwen2.5-1.5B-Instruct
+2026-02-15 19:37:54,263 [INFO]   Mode:             GRPO (correctness + format reward)
+2026-02-15 19:37:54,263 [INFO]   System prompt:    Think step by step inside <think> tags before answering. For...
+2026-02-15 19:37:54,263 [INFO]   LoRA rank:        16
+2026-02-15 19:37:54,263 [INFO]   Num generations:  8
+2026-02-15 19:37:54,263 [INFO]   Batch size:       4
+2026-02-15 19:37:54,263 [INFO]   Grad accum steps: 32
+2026-02-15 19:37:54,263 [INFO]   Effective batch:  128 sequences = 16 unique prompts
+2026-02-15 19:37:54,263 [INFO]   Learning rate:    5e-05
+2026-02-15 19:37:54,263 [INFO]   Beta (KL pen.):   0.04
+2026-02-15 19:37:54,263 [INFO]   Temperature:      1.0
+2026-02-15 19:37:54,264 [INFO]   Max prompt len:   300
+2026-02-15 19:37:54,264 [INFO]   Max compl len:    1024
+2026-02-15 19:37:54,264 [INFO]   Max steps:        500
+2026-02-15 19:37:54,264 [INFO]   Mask truncated:   True
+2026-02-15 19:37:54,264 [INFO]   vLLM:             True (mode=colocate, mem=0.4, sleep=True)
+2026-02-15 19:37:54,264 [INFO]   Output dir:       ./checkpoint/run_20260215_193740
+2026-02-15 19:37:54,264 [INFO]   W&B:              ['wandb']
+2026-02-15 19:37:58,595 [INFO] We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2026-02-15 19:42:21,475 [INFO] gcc -pthread -B /home/zeus/miniconda3/envs/cloudspace/compiler_compat -fno-strict-overflow -Wsign-compare -DNDEBUG -O2 -Wall -fPIC -O2 -isystem /home/zeus/miniconda3/envs/cloudspace/include -fPIC -O2 -isystem /home/zeus/miniconda3/envs/cloudspace/include -fPIC -c /tmp/tmpcm9181es/test.c -o /tmp/tmpcm9181es/test.o
+2026-02-15 19:42:21,493 [INFO] gcc -pthread -B /home/zeus/miniconda3/envs/cloudspace/compiler_compat /tmp/tmpcm9181es/test.o -laio -o /tmp/tmpcm9181es/a.out
+2026-02-15 19:42:21,507 [INFO] gcc -pthread -B /home/zeus/miniconda3/envs/cloudspace/compiler_compat -fno-strict-overflow -Wsign-compare -DNDEBUG -O2 -Wall -fPIC -O2 -isystem /home/zeus/miniconda3/envs/cloudspace/include -fPIC -O2 -isystem /home/zeus/miniconda3/envs/cloudspace/include -fPIC -c /tmp/tmp530gbkj8/test.c -o /tmp/tmp530gbkj8/test.o
+2026-02-15 19:42:21,521 [INFO] gcc -pthread -B /home/zeus/miniconda3/envs/cloudspace/compiler_compat /tmp/tmp530gbkj8/test.o -L/usr/local/cuda -L/usr/local/cuda/lib64 -lcufile -o /tmp/tmp530gbkj8/a.out

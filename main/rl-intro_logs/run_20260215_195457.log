@@ -1,0 +1,53 @@
+2026-02-15 19:55:06,320 [INFO] === Run started: 20260215_195457 ===
+2026-02-15 19:55:06,321 [INFO] Log file: ./logs/run_20260215_195457.log
+2026-02-15 19:55:06,321 [INFO] Loading entity-tracking dataset ...
+2026-02-15 19:55:06,333 [INFO] Dataset loaded: 2230 entity-tracking problems
+2026-02-15 19:55:06,461 [INFO] Config:
+2026-02-15 19:55:06,462 [INFO]   Model:            Qwen/Qwen2.5-1.5B-Instruct
+2026-02-15 19:55:06,462 [INFO]   Mode:             GRPO (correctness + format reward)
+2026-02-15 19:55:06,462 [INFO]   System prompt:    Think step by step inside <think> tags before answering. For...
+2026-02-15 19:55:06,462 [INFO]   LoRA rank:        16
+2026-02-15 19:55:06,462 [INFO]   Num generations:  8
+2026-02-15 19:55:06,462 [INFO]   Batch size:       4
+2026-02-15 19:55:06,462 [INFO]   Grad accum steps: 32
+2026-02-15 19:55:06,462 [INFO]   Effective batch:  128 sequences = 16 unique prompts
+2026-02-15 19:55:06,462 [INFO]   Learning rate:    5e-05
+2026-02-15 19:55:06,462 [INFO]   Beta (KL pen.):   0.04
+2026-02-15 19:55:06,462 [INFO]   Temperature:      1.0
+2026-02-15 19:55:06,462 [INFO]   Max compl len:    1024
+2026-02-15 19:55:06,462 [INFO]   Max steps:        500
+2026-02-15 19:55:06,462 [INFO]   Mask truncated:   True
+2026-02-15 19:55:06,462 [INFO]   Generation:       transformers paged attention (no vLLM)
+2026-02-15 19:55:06,462 [INFO]   Output dir:       ./checkpoint/run_20260215_195457
+2026-02-15 19:55:06,462 [INFO]   W&B:              ['wandb']
+2026-02-15 19:55:06,955 [INFO] We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2026-02-15 19:55:09,785 [INFO] /home/zeus/miniconda3/envs/cloudspace/bin/x86_64-conda-linux-gnu-cc -march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -isystem /home/zeus/miniconda3/envs/cloudspace/include -I/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/include -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs -DNDEBUG -D_FORTIFY_SOURCE=2 -O2 -isystem /home/zeus/miniconda3/envs/cloudspace/include -I/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/include -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs -fPIC -march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -isystem /home/zeus/miniconda3/envs/cloudspace/include -I/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/include -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs -c /tmp/tmpd1yl681b/test.c -o /tmp/tmpd1yl681b/test.o
+2026-02-15 19:55:09,850 [INFO] /home/zeus/miniconda3/envs/cloudspace/bin/x86_64-conda-linux-gnu-cc -Wl,-O2 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro -Wl,-z,now -Wl,--disable-new-dtags -Wl,--gc-sections -Wl,-rpath,/home/zeus/miniconda3/envs/cloudspace/lib -Wl,-rpath-link,/home/zeus/miniconda3/envs/cloudspace/lib -L/home/zeus/miniconda3/envs/cloudspace/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs /tmp/tmpd1yl681b/test.o -laio -o /tmp/tmpd1yl681b/a.out
+2026-02-15 19:55:09,877 [INFO] /home/zeus/miniconda3/envs/cloudspace/bin/x86_64-conda-linux-gnu-cc -march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -isystem /home/zeus/miniconda3/envs/cloudspace/include -I/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/include -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs -DNDEBUG -D_FORTIFY_SOURCE=2 -O2 -isystem /home/zeus/miniconda3/envs/cloudspace/include -I/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/include -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs -fPIC -march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -isystem /home/zeus/miniconda3/envs/cloudspace/include -I/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/include -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs -c /tmp/tmp3t5s5sq0/test.c -o /tmp/tmp3t5s5sq0/test.o
+2026-02-15 19:55:09,895 [INFO] /home/zeus/miniconda3/envs/cloudspace/bin/x86_64-conda-linux-gnu-cc -Wl,-O2 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro -Wl,-z,now -Wl,--disable-new-dtags -Wl,--gc-sections -Wl,-rpath,/home/zeus/miniconda3/envs/cloudspace/lib -Wl,-rpath-link,/home/zeus/miniconda3/envs/cloudspace/lib -L/home/zeus/miniconda3/envs/cloudspace/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs /tmp/tmp3t5s5sq0/test.o -L/home/zeus/miniconda3/envs/cloudspace -L/home/zeus/miniconda3/envs/cloudspace/lib64 -lcufile -o /tmp/tmp3t5s5sq0/a.out
+2026-02-15 19:55:09,949 [INFO] /home/zeus/miniconda3/envs/cloudspace/bin/x86_64-conda-linux-gnu-cc -march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -isystem /home/zeus/miniconda3/envs/cloudspace/include -I/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/include -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs -DNDEBUG -D_FORTIFY_SOURCE=2 -O2 -isystem /home/zeus/miniconda3/envs/cloudspace/include -I/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/include -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs -fPIC -march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -isystem /home/zeus/miniconda3/envs/cloudspace/include -I/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/include -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs -c /tmp/tmp8h8d1eu8/test.c -o /tmp/tmp8h8d1eu8/test.o
+2026-02-15 19:55:09,968 [INFO] /home/zeus/miniconda3/envs/cloudspace/bin/x86_64-conda-linux-gnu-cc -Wl,-O2 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro -Wl,-z,now -Wl,--disable-new-dtags -Wl,--gc-sections -Wl,-rpath,/home/zeus/miniconda3/envs/cloudspace/lib -Wl,-rpath-link,/home/zeus/miniconda3/envs/cloudspace/lib -L/home/zeus/miniconda3/envs/cloudspace/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib -L/home/zeus/miniconda3/envs/cloudspace/targets/x86_64-linux/lib/stubs /tmp/tmp8h8d1eu8/test.o -laio -o /tmp/tmp8h8d1eu8/a.out
+2026-02-15 19:55:12,748 [INFO] Starting training ...
+2026-02-15 19:55:13,312 [INFO] Cache memory: 36815457484
+2026-02-15 19:55:13,312 [INFO] num_blocks = 24318 is too large, setting to self._upper_bound_num_blocks = 4096
+2026-02-15 19:55:13,313 [INFO] max_batch_tokens = 7781 is too large, setting to self._upper_bound_max_batch_tokens = 256
+2026-02-15 19:55:13,313 [INFO] PagedAttentionCache initialized with self.num_blocks = 4096, self.block_size = 32, page_size = 256, self.max_batch_tokens = 256 num_attention_masks = 1
+2026-02-15 19:55:13,317 [INFO] self.cache_shape = (131073, 2, 128) self.key_cache[0].shape = torch.Size([131073, 2, 128]) self.key_cache[0].numel() = 33554688
+2026-02-15 19:56:19,837 [ERROR] Error in generation loop: No more free blocks
+Traceback (most recent call last):
+  File "/home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/transformers/generation/continuous_batching/continuous_api.py", line 875, in _run_generation_loop
+    self._inner_generation_loop(batch_processor)
+  File "/home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/transformers/utils/metrics.py", line 150, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/transformers/generation/continuous_batching/continuous_api.py", line 909, in _inner_generation_loop
+    batch_processor.update_batch()
+  File "/home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/transformers/utils/metrics.py", line 150, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/transformers/generation/continuous_batching/continuous_api.py", line 543, in update_batch
+    raise ValueError("No more free blocks")
+ValueError: No more free blocks
+2026-02-15 19:56:19,848 [INFO] Generation loop finished.
+2026-02-15 19:56:20,849 [ERROR] Generation thread terminated unexpectedly.
+2026-02-15 19:56:20,851 [INFO] Continuous Batching Manager stopped.

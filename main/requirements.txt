@@ -1,0 +1,24 @@
+# Tiny-Math-Solver — Pinned Dependencies
+# Install with: pip install -r requirements.txt
+# Or run: bash setup.sh (handles everything including dataset build)
+#
+# IMPORTANT: Do NOT install openrlhf — it forces flash-attn==2.8.3
+# which conflicts with everything.
+
+# Core training stack
+trl>=0.18.0
+transformers>=4.51.0
+peft>=0.14.0
+accelerate>=1.2.0
+datasets>=3.0.0
+
+# Logging
+wandb
+
+# Pin numpy: must be <2.3 for numba (vLLM dep), and works with matplotlib
+numpy>=1.26,<2.3
+
+# NOTE: We do NOT pin torch — use whatever the environment provides.
+# NOTE: We do NOT install vllm — colocate mode + PEFT has known bugs.
+#       If you want vLLM server mode in the future, install separately:
+#       pip install vllm==0.12.0

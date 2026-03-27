@@ -1,0 +1,19 @@
+---
+description: Rules for giving the user commands to run on remote GPU machines (Lightning, etc.)
+alwaysApply: true
+---
+
+# Remote GPU Commands
+
+When giving the user a command to run on a remote machine (Lightning, SSH, etc.):
+
+1. **Always wrap in `nohup` with logging** so it survives laptop close / SSH disconnect:
+   ```bash
+   nohup python src/some_script.py --flags > logs/some_script_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+   ```
+2. **Include `tail -f`** so they can watch progress:
+   ```bash
+   tail -f logs/some_script_*.log
+   ```
+3. **Create the logs directory** if it might not exist: `mkdir -p logs`
+4. Never give a bare `python src/...` command for anything that takes more than a minute.

@@ -1,0 +1,80 @@
+nohup: ignoring input
+/home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Comparing 100 problems present in both evals
+
+======================================================================
+  OVERALL (all 100 problems)
+======================================================================
+  Baseline pass@1:    67.7%
+  Checkpoint pass@1:  72.0%
+  Delta:              +4.3%
+
+======================================================================
+  BREAKDOWN BY ENTITY COUNT
+======================================================================
+  Entities    Count   Baseline   Checkpoint    Delta
+  ----------------------------------------------
+  0              13      72.1%        63.5%    -8.7%
+  1              60      63.9%        70.3%    +6.5%
+  2              17      72.4%        79.8%    +7.4%
+  3               4      76.6%        81.2%    +4.7%
+  4+              6      77.1%        79.2%    +2.1%
+
+======================================================================
+  TOP 10 IMPROVEMENTS
+======================================================================
+   6/16 → 13/16  (+43.8%)  [2 ent: Brian, Bobby]
+    Brian's friend Bobby has 5 fewer than 3 times as many video games as Brian does....
+   5/16 → 12/16  (+43.8%)  [1 ent: Mark]
+    Mark was unwell for 3 months, during which he lost 10 pounds per month. If his f...
+   6/16 → 13/16  (+43.8%)  [1 ent: Hunter]
+    Hunter counted 50 cars packed in their school parking lot when entering class on...
+   7/16 → 13/16  (+37.5%)  [1 ent: Emma]
+    Emma can make and upload 72 vlogs per month. But she was only able to make 18 vl...
+   9/16 → 14/16  (+31.2%)  [1 ent: Jim]
+    Jim spends 2 hours watching TV and then decides to go to bed and reads for half ...
+  11/16 → 16/16  (+31.2%)  [1 ent: Peyton]
+    Peyton scheduled after-work activities of a one hour yoga class on Monday, a coo...
+   8/16 → 13/16  (+31.2%)  [2 ent: Sale, Antonella]
+    A marketing company pays its employees on a commission-based salary system. If y...
+   7/16 → 11/16  (+25.0%)  [1 ent: Melanie]
+    Melanie is a door-to-door saleswoman. She sold a third of her vacuum cleaners at...
+  12/16 → 16/16  (+25.0%)  [2 ent: Rafaela, Julieta]
+    While working at the restaurant, each of the forty customers who came into the r...
+   3/16 →  7/16  (+25.0%)  [1 ent: Jen]
+    Jen got 3 fish.  They each need $1 worth of food a day.  How much does she spend...
+
+======================================================================
+  TOP 10 REGRESSIONS
+======================================================================
+   3/16 →  0/16  (-18.8%)  [1 ent: Twenty]
+    Twenty dozen cups cost $1200 less than the total cost of half a dozen plates sol...
+  15/16 → 12/16  (-18.8%)  [0 ent: ]
+    Some people got on a bus at the terminal. At the first bus stop, 5 more people g...
+   9/16 →  6/16  (-18.8%)  [1 ent: Verna]
+    Verna loves to eat fruit. She bought three apples at $1.50 each, five oranges at...
+  14/16 → 11/16  (-18.8%)  [1 ent: Nik]
+    Nik has 200 crayons. He wants to separate them into groups of 8 and put them int...
+  12/16 →  8/16  (-25.0%)  [0 ent: ]
+    Three friends spent $20.25 on 3 tickets to the fair. They also spent $4.50 less ...
+  10/16 →  6/16  (-25.0%)  [1 ent: Jame]
+    James decides to buy birthday candles for his 2 sons.  One of them is 12 and the...
+  15/16 → 11/16  (-25.0%)  [0 ent: ]
+    A jellyfish tank has numerous jellyfish in it. A fifth of the jellyfish are larg...
+  13/16 →  7/16  (-37.5%)  [0 ent: ]
+    A tomato vendor decides to switch who he buys his tomatoes for.  He sells 500 to...
+  10/16 →  4/16  (-37.5%)  [1 ent: Randy]
+    Randy has 9 oatmeal cookies, 4 chocolate chip cookies, and 5 sugar cookies. He a...
+   9/16 →  2/16  (-43.8%)  [1 ent: George]
+    George, a grade six teacher, ordered 600 burritos for the sixth-grade class picn...
+
+======================================================================
+  NOISE CHECK
+======================================================================
+  Improved:   50 problems
+  Regressed:  27 problems
+  Unchanged:  23 problems
+  Win ratio:  64.9% (50/77)
+  → Likely real improvement (wins > 60% of changed problems)
+======================================================================

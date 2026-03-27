@@ -1,0 +1,135 @@
+nohup: ignoring input
+/home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Checkpoint: checkpoint/run_20260215_202141/checkpoint-50
+System prompt: NO (baseline-compatible)
+
+Loading Qwen/Qwen2.5-1.5B-Instruct + LoRA from checkpoint/run_20260215_202141/checkpoint-50 ...
+`torch_dtype` is deprecated! Use `dtype` instead!
+Model loaded in 9.5s
+
+Loading GSM8K (test split) ...
+Selected 100 questions (same seed=42 as baseline)
+
+======================================================================
+  CHECKPOINT EVAL: checkpoint/run_20260215_202141/checkpoint-50
+  100 problems × greedy (temp=0, 1 response)
+  Baseline pass@1: 67.7%
+======================================================================
+
+The following generation flags are not valid and may be ignored: ['temperature', 'top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+[  1/100] ✗  gold=2280  pred=2180  via=boxed  (12.0s)
+[  2/100] ✓  gold=1  pred=1  via=boxed  (13.5s)
+[  3/100] ✗  gold=5  pred=0.8  via=boxed  (16.2s)
+[  4/100] ✓  gold=12  pred=12  via=boxed  (10.8s)
+[  5/100] ✓  gold=273  pred=273  via=boxed  (10.9s)
+[  6/100] ✓  gold=45  pred=45  via=boxed  (9.9s)
+[  7/100] ✓  gold=21  pred=21  via=boxed  (9.3s)
+[  8/100] ✗  gold=145  pred=6  via=last_number_fallback  (18.5s)
+[  9/100] ✗  gold=60  pred=110  via=boxed  (11.5s)
+[ 10/100] ✓  gold=122  pred=122  via=boxed  (15.8s)
+[ 11/100] ✓  gold=29  pred=29  via=boxed  (14.7s)
+[ 12/100] ✗  gold=80  pred=1080  via=boxed  (13.7s)
+[ 13/100] ✓  gold=36  pred=36  via=boxed  (12.5s)
+[ 14/100] ✓  gold=1430  pred=1430  via=boxed  (11.3s)
+[ 15/100] ✓  gold=5  pred=5  via=last_number_fallback  (11.5s)
+[ 16/100] ✓  gold=5  pred=5  via=boxed  (9.9s)
+[ 17/100] ✓  gold=5  pred=5  via=boxed  (10.4s)
+[ 18/100] ✓  gold=66  pred=66  via=boxed  (10.2s)
+[ 19/100] ✓  gold=15  pred=15  via=boxed  (6.4s)
+[ 20/100] ✗  gold=40  pred=48  via=boxed  (11.4s)
+[ 21/100] ✗  gold=93  pred=31  via=boxed  (8.2s)
+[ 22/100] ✗  gold=2000  pred=19000  via=boxed  (11.9s)
+[ 23/100] ✓  gold=1520  pred=1520  via=boxed  (15.1s)
+[ 24/100] ✓  gold=11050  pred=11050  via=boxed  (16.0s)
+[ 25/100] ✓  gold=90  pred=90  via=boxed  (18.4s)
+[ 26/100] ✓  gold=40000  pred=40000  via=boxed  (17.0s)
+[ 27/100] ✓  gold=21  pred=21  via=boxed  (8.0s)
+[ 28/100] ✓  gold=18  pred=18  via=boxed  (20.7s)
+[ 29/100] ✓  gold=14  pred=14  via=boxed  (10.3s)
+[ 30/100] ✓  gold=23  pred=23  via=boxed  (15.7s)
+[ 31/100] ✓  gold=145  pred=145  via=boxed  (15.8s)
+[ 32/100] ✓  gold=123  pred=123  via=boxed  (16.3s)
+[ 33/100] ✓  gold=98  pred=98  via=boxed  (16.4s)
+[ 34/100] ✗  gold=7  pred=4.40  via=boxed  (15.3s)
+[ 35/100] ✗  gold=34  pred=36.33  via=boxed  (22.5s)
+[ 36/100] ✓  gold=38  pred=38  via=boxed  (17.2s)
+[ 37/100] ✓  gold=320  pred=320  via=boxed  (14.2s)
+[ 38/100] ✓  gold=50  pred=50  via=boxed  (15.7s)
+[ 39/100] ✓  gold=50  pred=50  via=boxed  (7.7s)
+[ 40/100] ✓  gold=84  pred=84  via=boxed  (13.9s)
+[ 41/100] ✓  gold=50  pred=50  via=boxed  (21.5s)
+[ 42/100] ✓  gold=8000  pred=8000  via=boxed  (9.3s)
+[ 43/100] ✗  gold=280  pred=56  via=boxed  (7.7s)
+[ 44/100] ✓  gold=30  pred=30  via=boxed  (7.9s)
+[ 45/100] ✗  gold=192  pred=96  via=boxed  (15.9s)
+[ 46/100] ✓  gold=276  pred=276  via=boxed  (14.8s)
+[ 47/100] ✓  gold=32  pred=32  via=boxed  (11.5s)
+[ 48/100] ✓  gold=25  pred=25  via=boxed  (19.8s)
+[ 49/100] ✓  gold=10  pred=10  via=boxed  (9.1s)
+[ 50/100] ✓  gold=84  pred=84  via=boxed  (12.5s)
+[ 51/100] ✓  gold=147  pred=147  via=boxed  (13.2s)
+[ 52/100] ✗  gold=25  pred=30  via=boxed  (19.1s)
+[ 53/100] ✓  gold=1800  pred=1800  via=boxed  (12.6s)
+[ 54/100] ✓  gold=20  pred=20  via=boxed  (19.2s)
+[ 55/100] ✓  gold=140  pred=140  via=boxed  (11.0s)
+[ 56/100] ✓  gold=36  pred=36  via=boxed  (16.9s)
+[ 57/100] ✓  gold=1  pred=1  via=boxed  (12.5s)
+[ 58/100] ✓  gold=1  pred=1  via=boxed  (10.5s)
+[ 59/100] ✗  gold=50  pred=54  via=boxed  (17.2s)
+[ 60/100] ✓  gold=860  pred=860  via=boxed  (14.6s)
+[ 61/100] ✗  gold=60  pred=42.86  via=boxed  (20.1s)
+[ 62/100] ✓  gold=23  pred=23  via=boxed  (23.9s)
+[ 63/100] ✗  gold=350  pred=50  via=boxed  (10.7s)
+[ 64/100] ✓  gold=100  pred=100  via=boxed  (23.2s)
+[ 65/100] ✓  gold=133  pred=133  via=last_number_fallback  (11.9s)
+[ 66/100] ✓  gold=112  pred=112  via=boxed  (18.4s)
+[ 67/100] ✓  gold=13  pred=13  via=boxed  (14.8s)
+[ 68/100] ✗  gold=130  pred=65  via=boxed  (11.1s)
+[ 69/100] ✓  gold=2125  pred=2125  via=boxed  (11.4s)
+[ 70/100] ✓  gold=7  pred=7  via=boxed  (8.1s)
+[ 71/100] ✓  gold=120  pred=120  via=boxed  (13.0s)
+[ 72/100] ✓  gold=8  pred=8  via=boxed  (14.5s)
+[ 73/100] ✓  gold=144  pred=144  via=boxed  (21.2s)
+[ 74/100] ✓  gold=6  pred=6  via=boxed  (8.0s)
+[ 75/100] ✓  gold=450  pred=450  via=boxed  (11.5s)
+[ 76/100] ✗  gold=4400  pred=1092  via=boxed  (24.2s)
+[ 77/100] ✓  gold=450  pred=450  via=last_number_fallback  (16.4s)
+[ 78/100] ✗  gold=64  pred=16  via=boxed  (14.1s)
+[ 79/100] ✓  gold=27  pred=27  via=boxed  (12.2s)
+[ 80/100] ✓  gold=112  pred=112  via=boxed  (9.6s)
+[ 81/100] ✓  gold=32  pred=32  via=boxed  (10.3s)
+[ 82/100] ✓  gold=6  pred=6  via=boxed  (14.6s)
+[ 83/100] ✓  gold=4  pred=4  via=boxed  (10.1s)
+[ 84/100] ✓  gold=79  pred=79  via=last_number_fallback  (10.8s)
+[ 85/100] ✓  gold=35  pred=35  via=boxed  (12.5s)
+[ 86/100] ✓  gold=100  pred=100  via=boxed  (7.8s)
+[ 87/100] ✓  gold=40  pred=40  via=boxed  (9.7s)
+[ 88/100] ✓  gold=30  pred=30  via=boxed  (10.6s)
+[ 89/100] ✗  gold=170  pred=60  via=boxed  (17.0s)
+[ 90/100] ✓  gold=29  pred=29  via=boxed  (10.7s)
+[ 91/100] ✓  gold=5  pred=5  via=boxed  (9.3s)
+[ 92/100] ✓  gold=12  pred=12  via=boxed  (20.1s)
+[ 93/100] ✓  gold=310  pred=310  via=boxed  (13.0s)
+[ 94/100] ✗  gold=230  pred=470  via=boxed  (12.8s)
+[ 95/100] ✓  gold=650  pred=650  via=boxed  (11.7s)
+[ 96/100] ✓  gold=75  pred=75  via=boxed  (16.3s)
+[ 97/100] ✗  gold=7  pred=6  via=boxed  (13.3s)
+[ 98/100] ✗  gold=1600  pred=400  via=boxed  (16.9s)
+[ 99/100] ✓  gold=90  pred=90  via=boxed  (11.0s)
+[100/100] ✓  gold=18  pred=18  via=boxed  (10.2s)
+
+======================================================================
+  RESULTS (GREEDY): checkpoint/run_20260215_202141/checkpoint-50
+======================================================================
+  Metric                      Baseline   Checkpoint      Delta
+  ---------------------------------------------------------
+  Greedy pass@1                  67.7%        77.0%      +9.3%
+======================================================================
+
+  Correct: 77/100  |  Wrong: 23/100
+
+  ✓ IMPROVEMENT: greedy pass@1 up +9.3% from baseline
+
+  Results saved to: logs/eval_checkpoint_greedy_no_system_prompt.jsonl
+======================================================================

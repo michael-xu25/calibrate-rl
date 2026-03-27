@@ -1,0 +1,13 @@
+---
+description: Git workflow rules - always commit and push after making changes
+alwaysApply: true
+---
+
+# Git Workflow
+
+After making code changes:
+
+1. **Always commit and push** when you're done with a set of changes. Do not wait for the user to ask.
+2. Write clear commit messages explaining *why*, not just *what*.
+3. If `git push` fails due to remote changes, do `git pull --rebase origin main` first, resolve conflicts, then push.
+4. Delete the `data/entity_tracking_dataset` directory reminder: if reward functions or `build_entity_dataset.py` change, remind the user to delete and rebuild the dataset on Lightning.
