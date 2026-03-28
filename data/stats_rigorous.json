@@ -1,0 +1,128 @@
+{
+  "algebra": {
+    "n": 20,
+    "mean_qwen": 0.93125,
+    "mean_llama": 0.7625,
+    "mean_diff": 0.16875,
+    "wilcoxon_stat": 0.0,
+    "wilcoxon_p": 0.0018861674592449368,
+    "ttest_stat": 3.327452846554428,
+    "ttest_p": 0.0035394144753656083,
+    "cohens_d": 0.7633700367119738,
+    "bootstrap_ci": [
+      0.08125,
+      0.275
+    ],
+    "sig_uncorrected": "**",
+    "sig_bonferroni": "*",
+    "survives_bonferroni": 1
+  },
+  "counting_and_probability": {
+    "n": 20,
+    "mean_qwen": 0.76875,
+    "mean_llama": 0.575,
+    "mean_diff": 0.19375,
+    "wilcoxon_stat": 21.5,
+    "wilcoxon_p": 0.02815801788386051,
+    "ttest_stat": 2.4757297912592633,
+    "ttest_p": 0.02287983290046479,
+    "cohens_d": 0.5679713669269565,
+    "bootstrap_ci": [
+      0.04375,
+      0.35
+    ],
+    "sig_uncorrected": "*",
+    "sig_bonferroni": "\u2014",
+    "survives_bonferroni": 0
+  },
+  "geometry": {
+    "n": 20,
+    "mean_qwen": 0.51875,
+    "mean_llama": 0.40625,
+    "mean_diff": 0.1125,
+    "wilcoxon_stat": 23.0,
+    "wilcoxon_p": 0.2066110090083414,
+    "ttest_stat": 1.3083967721831935,
+    "ttest_p": 0.20634620633068415,
+    "cohens_d": 0.3001668056842815,
+    "bootstrap_ci": [
+      -0.05625,
+      0.28125
+    ],
+    "sig_uncorrected": "\u2014",
+    "sig_bonferroni": "\u2014",
+    "survives_bonferroni": 0
+  },
+  "intermediate_algebra": {
+    "n": 20,
+    "mean_qwen": 0.725,
+    "mean_llama": 0.5375,
+    "mean_diff": 0.1875,
+    "wilcoxon_stat": 16.0,
+    "wilcoxon_p": 0.0035517481082740017,
+    "ttest_stat": 3.470195026382057,
+    "ttest_p": 0.002562887948049639,
+    "cohens_d": 0.7961173386514129,
+    "bootstrap_ci": [
+      0.0875,
+      0.29375
+    ],
+    "sig_uncorrected": "**",
+    "sig_bonferroni": "*",
+    "survives_bonferroni": 1
+  },
+  "number_theory": {
+    "n": 20,
+    "mean_qwen": 0.7375,
+    "mean_llama": 0.54375,
+    "mean_diff": 0.19375,
+    "wilcoxon_stat": 3.0,
+    "wilcoxon_p": 0.0043649548824020445,
+    "ttest_stat": 2.9216830567428036,
+    "ttest_p": 0.008751263696852342,
+    "cohens_d": 0.6702800625998364,
+    "bootstrap_ci": [
+      0.08125,
+      0.325
+    ],
+    "sig_uncorrected": "**",
+    "sig_bonferroni": "*",
+    "survives_bonferroni": 1
+  },
+  "prealgebra": {
+    "n": 20,
+    "mean_qwen": 0.75625,
+    "mean_llama": 0.7625,
+    "mean_diff": -0.00625,
+    "wilcoxon_stat": 9.5,
+    "wilcoxon_p": 0.4385780260809998,
+    "ttest_stat": -0.10833115564558675,
+    "ttest_p": 0.9148688685705384,
+    "cohens_d": -0.024852871573478333,
+    "bootstrap_ci": [
+      -0.13125,
+      0.08125
+    ],
+    "sig_uncorrected": "\u2014",
+    "sig_bonferroni": "\u2014",
+    "survives_bonferroni": 0
+  },
+  "precalculus": {
+    "n": 20,
+    "mean_qwen": 0.48125,
+    "mean_llama": 0.40625,
+    "mean_diff": 0.075,
+    "wilcoxon_stat": 31.0,
+    "wilcoxon_p": 0.307026401445471,
+    "ttest_stat": 1.0554650703163893,
+    "ttest_p": 0.3044495885892157,
+    "cohens_d": 0.24214029368137852,
+    "bootstrap_ci": [
+      -0.06875,
+      0.20625
+    ],
+    "sig_uncorrected": "\u2014",
+    "sig_bonferroni": "\u2014",
+    "survives_bonferroni": 0
+  }
+}

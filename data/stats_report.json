@@ -1,0 +1,142 @@
+{
+  "algebra": {
+    "llama-3-8b": {
+      "pass_rate": 0.7625,
+      "successes": 122,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "qwen-2.5-7b": {
+      "pass_rate": 0.93125,
+      "successes": 149,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "z_statistic": -4.1914,
+    "p_value": 2.8e-05,
+    "significant": true,
+    "stars": "**",
+    "delta": 0.1688,
+    "stronger_model": "qwen-2.5-7b"
+  },
+  "counting_and_probability": {
+    "llama-3-8b": {
+      "pass_rate": 0.575,
+      "successes": 92,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "qwen-2.5-7b": {
+      "pass_rate": 0.76875,
+      "successes": 123,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "z_statistic": -3.6908,
+    "p_value": 0.000224,
+    "significant": true,
+    "stars": "**",
+    "delta": 0.1938,
+    "stronger_model": "qwen-2.5-7b"
+  },
+  "geometry": {
+    "llama-3-8b": {
+      "pass_rate": 0.40625,
+      "successes": 65,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "qwen-2.5-7b": {
+      "pass_rate": 0.51875,
+      "successes": 83,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "z_statistic": -2.0181,
+    "p_value": 0.043576,
+    "significant": true,
+    "stars": "*",
+    "delta": 0.1125,
+    "stronger_model": "qwen-2.5-7b"
+  },
+  "intermediate_algebra": {
+    "llama-3-8b": {
+      "pass_rate": 0.5375,
+      "successes": 86,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "qwen-2.5-7b": {
+      "pass_rate": 0.725,
+      "successes": 116,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "z_statistic": -3.476,
+    "p_value": 0.000509,
+    "significant": true,
+    "stars": "**",
+    "delta": 0.1875,
+    "stronger_model": "qwen-2.5-7b"
+  },
+  "number_theory": {
+    "llama-3-8b": {
+      "pass_rate": 0.54375,
+      "successes": 87,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "qwen-2.5-7b": {
+      "pass_rate": 0.7375,
+      "successes": 118,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "z_statistic": -3.6117,
+    "p_value": 0.000304,
+    "significant": true,
+    "stars": "**",
+    "delta": 0.1938,
+    "stronger_model": "qwen-2.5-7b"
+  },
+  "prealgebra": {
+    "llama-3-8b": {
+      "pass_rate": 0.7625,
+      "successes": 122,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "qwen-2.5-7b": {
+      "pass_rate": 0.75625,
+      "successes": 121,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "z_statistic": 0.1308,
+    "p_value": 0.895953,
+    "significant": false,
+    "stars": "",
+    "delta": -0.0062,
+    "stronger_model": "llama-3-8b"
+  },
+  "precalculus": {
+    "llama-3-8b": {
+      "pass_rate": 0.40625,
+      "successes": 65,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "qwen-2.5-7b": {
+      "pass_rate": 0.48125,
+      "successes": 77,
+      "trials": 160,
+      "n_problems": 20
+    },
+    "z_statistic": -1.3502,
+    "p_value": 0.176948,
+    "significant": false,
+    "stars": "",
+    "delta": 0.075,
+    "stronger_model": "qwen-2.5-7b"
+  }
+}

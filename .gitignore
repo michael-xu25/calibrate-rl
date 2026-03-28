@@ -1,62 +1,19 @@
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environments
+*.pyc
+*.pyo
 .venv/
 venv/
-env/
+
+# Model checkpoints (too large for git)
+checkpoints/
+
+# Environment
+.env
 
 # IDE
+.cursor/
 .vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Environment / secrets
-.env
-.env.*
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Training artifacts
-checkpoint/
-checkpoints/
-outputs/
-logs/
-wandb/
-runs/
-
-# Model weights (don't commit large files)
-*.pt
-*.pth
-*.bin
-*.safetensors
-*.gguf
-
-# HuggingFace cache
-.cache/
 
 # OS
 .DS_Store
-Thumbs.db
-
-# Ray
-/tmp/ray/
-ray_results/
-
-# Office documents (pitch decks, planning docs)
-*.docx
-*.pptx
-*.xlsx
-*.doc
-*.ppt
-*.xls

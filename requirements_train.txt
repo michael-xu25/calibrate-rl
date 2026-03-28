@@ -1,0 +1,11 @@
+# H100 (Nebius) training dependencies
+# pip install -r requirements_train.txt
+# For flash-attn: pip install flash-attn --no-build-isolation
+
+torch>=2.2.0
+transformers>=4.40.0
+trl>=0.8.6
+peft>=0.10.0
+accelerate>=0.28.0
+datasets>=2.18.0
+# flash-attn>=2.5.0  (install separately: pip install flash-attn --no-build-isolation)
