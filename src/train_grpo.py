@@ -7,26 +7,24 @@ Between phases: re-evaluate active problems, evict saturated/unreachable,
 replenish from reserve pool using the current model.
 
 Optimized for H100 (Nebius) on Lightning AI:
-  - Full bf16 (no quantization needed — H100 has 80GB VRAM)
-  - Flash Attention 2
-  - LoRA r=32 (larger rank affordable with full precision)
-  - Batch size 8, gradient accumulation 2 → effective batch 16
-  - 16 rollouts per problem (better gradient estimates, H100 is fast enough)
-  - 128 active curriculum problems
+  - Full bf16, Flash Attention 2 (auto-detected)
+  - LoRA r=32 across all projection layers
+  - Batch size 8 × grad_accum 2 = effective batch 16
+  - Scoring uses batched generation (16 rollouts in one forward pass)
+  - Resume from checkpoint if job is killed
 
 No vLLM — standard HuggingFace generation (Lightning AI compatible).
 
 Usage:
-    python src/train_grpo.py --model llama-3-8b
     python src/train_grpo.py --model qwen-2.5-7b
+    python src/train_grpo.py --model qwen-2.5-7b --resume   # resume from saved state
 
 Environment:
-    HF_TOKEN — required for Llama (gated); not needed for Qwen
+    HF_TOKEN — required for Llama; not needed for Qwen
 """
 
 import argparse
 import json
-import os
 import random
 import re
 import time
@@ -52,18 +50,20 @@ GOLDILOCKS_FILES = {
     "qwen-2.5-7b": Path("data/goldilocks_qwen-2.5-7b.json"),
 }
 
+EVAL_RESULTS_PATH = Path("data/evaluation_results_L1L2.json")
 RESERVE_POOL_PATH = Path("data/profile_dataset_L1L2.json")
 
-# ── H100 curriculum parameters ─────────────────────────────────────────────────
+# ── Curriculum parameters ──────────────────────────────────────────────────────
 
-STEPS_PER_PHASE      = 20     # gradient steps per phase before re-evaluating
-N_ROLLOUTS_EVAL      = 16     # rollouts for curriculum scoring (H100: 2× for richer signal)
+STEPS_PER_PHASE      = 20     # gradient steps per phase before curriculum refresh
+N_ROLLOUTS_EVAL      = 16     # rollouts per problem during scoring
 SATURATE_THRESHOLD   = 0.875  # pass_rate >= this → learned, evict
 UNREACHABLE_PATIENCE = 2      # consecutive 0-pass evals before evicting
-TARGET_CURRICULUM    = 128    # active problems per phase (H100: 2× vs A10G)
-MIN_CURRICULUM       = 16     # stop if pool drops below this
+TARGET_CURRICULUM    = 128    # active problems to maintain
+MIN_CURRICULUM       = 16     # stop training if pool falls below this
+MAX_PROBE            = 80     # max reserve candidates to probe per refresh
 
-# ── H100 generation parameters ─────────────────────────────────────────────────
+# ── Generation parameters ──────────────────────────────────────────────────────
 
 GEN_MAX_NEW_TOKENS = 512
 GEN_TEMPERATURE    = 0.8
@@ -120,6 +120,92 @@ def build_prompt(problem_text: str) -> str:
     )
 
 
+# ── Batched scoring ────────────────────────────────────────────────────────────
+
+def score_problems_batched(
+    items: List[Tuple[str, dict]],   # [(problem_id, problem_dict), ...]
+    model,
+    tokenizer,
+    label: str = "scoring",
+) -> Dict[str, float]:
+    """
+    Score each problem with N_ROLLOUTS_EVAL rollouts using a single batched
+    generate call per problem (batch_size = N_ROLLOUTS_EVAL).
+
+    This is ~16× faster than sequential calls because the H100 processes
+    all rollouts in parallel rather than waiting for each to complete.
+
+    Falls back to sequential if the batch OOMs (very long problems).
+    """
+    results = {}
+    model.eval()
+    t_start = time.monotonic()
+
+    with torch.inference_mode():
+        for i, (pid, prob) in enumerate(items):
+            prompt   = build_prompt(prob["problem"])
+            enc      = tokenizer(
+                prompt, return_tensors="pt", truncation=True, max_length=1024
+            )
+            input_len = enc["input_ids"].shape[1]
+
+            # Repeat prompt N times → single batched generate call
+            input_ids      = enc["input_ids"].repeat(N_ROLLOUTS_EVAL, 1).to(model.device)
+            attention_mask = enc["attention_mask"].repeat(N_ROLLOUTS_EVAL, 1).to(model.device)
+
+            try:
+                outputs = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=GEN_MAX_NEW_TOKENS,
+                    temperature=GEN_TEMPERATURE,
+                    top_p=GEN_TOP_P,
+                    do_sample=True,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+                texts = [
+                    tokenizer.decode(outputs[j][input_len:], skip_special_tokens=True)
+                    for j in range(N_ROLLOUTS_EVAL)
+                ]
+            except torch.cuda.OutOfMemoryError:
+                # Fallback: score sequentially if this problem's prompt is unusually long
+                print(f"\n  [OOM] {pid} — falling back to sequential scoring")
+                torch.cuda.empty_cache()
+                texts = []
+                single_input = enc.to(model.device)
+                for _ in range(N_ROLLOUTS_EVAL):
+                    out  = model.generate(
+                        **single_input,
+                        max_new_tokens=GEN_MAX_NEW_TOKENS,
+                        temperature=GEN_TEMPERATURE,
+                        top_p=GEN_TOP_P,
+                        do_sample=True,
+                        pad_token_id=tokenizer.eos_token_id,
+                    )
+                    texts.append(
+                        tokenizer.decode(out[0][input_len:], skip_special_tokens=True)
+                    )
+
+            rewards = [score(t, prob["answer"]) for t in texts]
+            pr = sum(rewards) / len(rewards)
+            results[pid] = pr
+
+            # Per-problem progress line
+            elapsed = time.monotonic() - t_start
+            rate    = (i + 1) / elapsed
+            eta     = (len(items) - i - 1) / rate if rate > 0 else 0
+            correct = sum(rewards)
+            print(
+                f"  [{label}] {i+1:>3}/{len(items)}  "
+                f"{pid:<35}  pass={pr:.3f} ({correct}/{N_ROLLOUTS_EVAL})  "
+                f"eta {eta:.0f}s",
+                flush=True,
+            )
+
+    model.train()
+    return results
+
+
 # ── Curriculum ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -134,6 +220,8 @@ class Curriculum:
     reserve:    List[dict]              = field(default_factory=list)
     evicted:    set                     = field(default_factory=set)
     phase_logs: List[dict]              = field(default_factory=list)
+    phase:      int                     = 0
+    total_steps: int                    = 0
 
     def size(self) -> int:
         return len(self.active)
@@ -148,15 +236,19 @@ class Curriculum:
             for pid, s in self.active.items()
         ])
 
-    def refresh(self, model, tokenizer, phase: int) -> dict:
-        """
-        Score active problems, evict saturated/unreachable, replenish from reserve.
-        Reserve holds ALL unevaluated problems — 0/8 candidates get re-probed
-        with the improving model and may enter the curriculum on later phases.
-        """
-        print(f"\n[Phase {phase}] Scoring {self.size()} active problems…")
-        pass_rates = self._score_problems(list(self.active.items()), model, tokenizer)
+    def refresh(self, model, tokenizer, out_dir: Path) -> None:
+        self.phase += 1
+        t0 = time.monotonic()
+        print(f"\n[Phase {self.phase} refresh] Scoring {self.size()} active problems…")
 
+        # Score active set
+        pass_rates = score_problems_batched(
+            [(pid, s.problem) for pid, s in self.active.items()],
+            model, tokenizer,
+            label="active",
+        )
+
+        # Evict
         evict_sat, evict_unreach = [], []
         for pid, state in list(self.active.items()):
             pr = pass_rates.get(pid, 0.0)
@@ -169,76 +261,108 @@ class Curriculum:
             else:
                 state.consecutive_zero_evals = 0
 
-        for pid in evict_sat + evict_unreach:
+        evicted_ids = set(evict_sat + evict_unreach)
+        for pid in evicted_ids:
             self.evicted.add(pid)
             del self.active[pid]
 
-        # Replenish: random sample so full reserve pool gets explored over time
+        # Replenish from reserve — random sample so full pool explored over time.
+        # Includes 0/8 base-model problems; they get re-probed with the current
+        # (improving) model and enter if now in Goldilocks range.
         needed = TARGET_CURRICULUM - self.size()
-        added = []
+        added  = []
         if needed > 0 and self.reserve:
-            probe_pool = random.sample(self.reserve, min(needed * 4, len(self.reserve)))
-            scored = self._score_problems(
-                [(p["id"], ProblemState(problem=p)) for p in probe_pool],
+            n_probe   = min(MAX_PROBE, len(self.reserve))
+            probe     = random.sample(self.reserve, n_probe)
+            print(f"[Phase {self.phase} refresh] Probing {n_probe} reserve candidates…")
+            scored    = score_problems_batched(
+                [(p["id"], p) for p in probe],
                 model, tokenizer,
+                label="probe",
             )
-            for prob in probe_pool:
-                if len(added) >= needed:
+            # Remove added IDs from reserve in one pass (O(n) not O(n²))
+            to_add = {}
+            for prob in probe:
+                if len(to_add) >= needed:
                     break
-                pr = scored.get(prob["id"], 0.0)
-                if 0.0 < pr < 1.0:
-                    self.active[prob["id"]] = ProblemState(problem=prob)
-                    self.reserve = [r for r in self.reserve if r["id"] != prob["id"]]
-                    added.append(prob["id"])
+                if 0.0 < scored.get(prob["id"], 0.0) < 1.0:
+                    to_add[prob["id"]] = prob
 
+            added_ids = set(to_add.keys())
+            self.reserve = [r for r in self.reserve if r["id"] not in added_ids]
+            for pid, prob in to_add.items():
+                self.active[pid] = ProblemState(problem=prob)
+                added.append(pid)
+
+        elapsed = time.monotonic() - t0
         log = {
-            "phase":             phase,
+            "phase":             self.phase,
             "evict_saturated":   len(evict_sat),
             "evict_unreachable": len(evict_unreach),
             "added":             len(added),
             "active_size":       self.size(),
             "reserve_size":      len(self.reserve),
             "pass_rates":        pass_rates,
+            "refresh_time_sec":  round(elapsed, 1),
         }
         self.phase_logs.append(log)
-        print(
-            f"[Phase {phase}] "
-            f"evicted(sat={len(evict_sat)} unreach={len(evict_unreach)})  "
-            f"added={len(added)}  active={self.size()}  reserve={len(self.reserve)}"
-        )
-        return log
 
-    def _score_problems(
-        self,
-        items: List[Tuple[str, ProblemState]],
-        model,
-        tokenizer,
-    ) -> Dict[str, float]:
-        results = {}
-        model.eval()
-        with torch.no_grad():
-            for pid, state in items:
-                prob   = state.problem
-                prompt = build_prompt(prob["problem"])
-                inputs = tokenizer(
-                    prompt, return_tensors="pt", truncation=True, max_length=1024
-                ).to(model.device)
-                rewards = []
-                for _ in range(N_ROLLOUTS_EVAL):
-                    out = model.generate(
-                        **inputs,
-                        max_new_tokens=GEN_MAX_NEW_TOKENS,
-                        temperature=GEN_TEMPERATURE,
-                        top_p=GEN_TOP_P,
-                        do_sample=True,
-                        pad_token_id=tokenizer.eos_token_id,
-                    )
-                    new_tokens = out[0][inputs["input_ids"].shape[1]:]
-                    text = tokenizer.decode(new_tokens, skip_special_tokens=True)
-                    rewards.append(score(text, prob["answer"]))
-                results[pid] = sum(rewards) / len(rewards)
-        model.train()
-        return results
+        print(
+            f"[Phase {self.phase} refresh] "
+            f"evicted(sat={len(evict_sat)} unreach={len(evict_unreach)})  "
+            f"added={len(added)}  active={self.size()}  reserve={len(self.reserve)}  "
+            f"({elapsed:.0f}s)"
+        )
+
+        # Save curriculum state after every refresh so we can resume if job dies
+        self._save_state(out_dir)
+
+    def _save_state(self, out_dir: Path) -> None:
+        state = {
+            "phase":       self.phase,
+            "total_steps": self.total_steps,
+            "evicted":     list(self.evicted),
+            "active": [
+                {
+                    "id":                    pid,
+                    "consecutive_zero_evals": s.consecutive_zero_evals,
+                    "problem":               s.problem,
+                }
+                for pid, s in self.active.items()
+            ],
+            "reserve": self.reserve,
+            "phase_logs": self.phase_logs,
+        }
+        path = out_dir / "curriculum_state.json"
+        tmp  = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2))
+        tmp.replace(path)   # atomic write
+
+    @classmethod
+    def load_state(cls, out_dir: Path) -> "Curriculum":
+        path = out_dir / "curriculum_state.json"
+        state = json.loads(path.read_text())
+        active = {
+            e["id"]: ProblemState(
+                problem=e["problem"],
+                consecutive_zero_evals=e["consecutive_zero_evals"],
+            )
+            for e in state["active"]
+        }
+        c = cls(
+            active=active,
+            reserve=state["reserve"],
+            evicted=set(state["evicted"]),
+            phase_logs=state["phase_logs"],
+            phase=state["phase"],
+            total_steps=state["total_steps"],
+        )
+        print(
+            f"  Resumed from phase {c.phase}  "
+            f"({c.size()} active, {len(c.reserve)} reserve, "
+            f"{c.total_steps} steps done)"
+        )
+        return c
 
 
 # ── Model loading — H100 optimized ────────────────────────────────────────────
@@ -246,18 +370,17 @@ class Curriculum:
 def _flash_attn_available() -> bool:
     try:
         import flash_attn  # noqa: F401
-        # Package present — but also needs CUDA + a compatible GPU (Ampere+)
         return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
     except ImportError:
         return False
 
 
 def load_model_and_tokenizer(model_id: str):
-    use_fa2 = _flash_attn_available()
+    use_fa2   = _flash_attn_available()
     attn_impl = "flash_attention_2" if use_fa2 else "eager"
     print(f"\nLoading {model_id} (bf16, attn={attn_impl})…")
     if not use_fa2:
-        print("  flash-attn not found or GPU < Ampere — falling back to eager attention")
+        print("  flash-attn not available — using eager attention")
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
@@ -271,16 +394,21 @@ def load_model_and_tokenizer(model_id: str):
         attn_implementation=attn_impl,
     )
 
-    # r=32 affordable in full bf16 on H100 (vs r=16 with QLoRA on A10G)
     lora_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=32,
         lora_alpha=64,
         lora_dropout=0.05,
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules=["q_proj", "v_proj", "k_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
         bias="none",
     )
     model = get_peft_model(model, lora_cfg)
+    # Required for gradient_checkpointing + PEFT: frozen base layers don't
+    # require grad by default, which breaks gradient checkpointing's
+    # save/restore mechanism. This enables gradients on the input embeddings
+    # so the chain is unbroken.
+    model.enable_input_require_grads()
     model.print_trainable_parameters()
     return model, tokenizer
 
@@ -298,15 +426,39 @@ def build_curriculum(model_key: str) -> Curriculum:
     with open(gold_path) as f:
         goldilocks = json.load(f)
 
-    seed = goldilocks[:TARGET_CURRICULUM]
+    seed   = goldilocks[:TARGET_CURRICULUM]
     active = {p["id"]: ProblemState(problem=p) for p in seed}
     active_ids = set(active.keys())
 
+    # Build reserve:
+    # - Remaining Goldilocks problems (guaranteed trainable on base model)
+    # - L1+L2 problems with pass_rate = 0 on base model (may become trainable)
+    # - Exclude pass_rate = 1 on base model — they'll never be Goldilocks
     reserve = [p for p in goldilocks[TARGET_CURRICULUM:]]
-    if RESERVE_POOL_PATH.exists():
+
+    if RESERVE_POOL_PATH.exists() and EVAL_RESULTS_PATH.exists():
         with open(RESERVE_POOL_PATH) as f:
             full_pool = json.load(f)
-        reserve += [p for p in full_pool if p["id"] not in active_ids]
+        with open(EVAL_RESULTS_PATH) as f:
+            eval_results = json.load(f)
+
+        # Index base-model pass rates
+        base_pass = {}
+        for rec in eval_results.values():
+            if model_key in rec.get("models", {}):
+                base_pass[rec["id"]] = rec["models"][model_key]["pass_rate"]
+
+        saturated_excluded = 0
+        for p in full_pool:
+            if p["id"] in active_ids:
+                continue
+            pr = base_pass.get(p["id"], -1)
+            if pr >= 1.0:
+                saturated_excluded += 1
+                continue   # already perfect — waste to probe
+            reserve.append(p)
+
+        print(f"  Excluded {saturated_excluded} base-model-saturated problems from reserve")
 
     print(f"  Active:  {len(active)} problems")
     print(f"  Reserve: {len(reserve)} problems")
@@ -319,34 +471,32 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
     out_dir = args.output_dir / args.model
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    phase       = 0
-    total_steps = 0
-
     while True:
-        phase += 1
-        dataset = curriculum.to_dataset()
-
         if curriculum.size() < MIN_CURRICULUM:
             print(
-                f"\n[Phase {phase}] Pool below minimum "
+                f"\n[Phase {curriculum.phase + 1}] Pool below minimum "
                 f"({curriculum.size()} < {MIN_CURRICULUM}). "
                 f"Natural ceiling reached — stopping."
             )
             break
 
-        if total_steps >= args.max_steps:
+        if curriculum.total_steps >= args.max_steps:
             print(f"\nReached max_steps ({args.max_steps}). Stopping.")
             break
 
-        steps_this_phase = min(STEPS_PER_PHASE, args.max_steps - total_steps)
+        steps_this_phase = min(STEPS_PER_PHASE, args.max_steps - curriculum.total_steps)
         print(f"\n{'='*60}")
-        print(f"  Phase {phase}  |  {curriculum.size()} problems  |  {steps_this_phase} steps")
+        print(
+            f"  Phase {curriculum.phase + 1}  |  "
+            f"{curriculum.size()} problems  |  "
+            f"{steps_this_phase} steps  |  "
+            f"{curriculum.total_steps}/{args.max_steps} total steps done"
+        )
         print(f"{'='*60}")
 
         grpo_config = GRPOConfig(
-            output_dir=str(out_dir / f"phase_{phase:03d}"),
+            output_dir=str(out_dir / f"phase_{curriculum.phase + 1:03d}"),
             max_steps=steps_this_phase,
-            # H100: batch 8 × grad_accum 2 = effective batch 16
             per_device_train_batch_size=8,
             gradient_accumulation_steps=2,
             learning_rate=1e-5,
@@ -359,7 +509,7 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
             use_vllm=False,
             report_to="none",
             bf16=True,
-            gradient_checkpointing=True,   # trade compute for memory at large batch
+            gradient_checkpointing=True,
             dataloader_num_workers=0,
             remove_unused_columns=False,
         )
@@ -367,28 +517,25 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
         trainer = GRPOTrainer(
             model=model,
             args=grpo_config,
-            train_dataset=dataset,
+            train_dataset=curriculum.to_dataset(),
             reward_funcs=reward_fn,
             processing_class=tokenizer,
         )
         trainer.train()
-        total_steps += steps_this_phase
+        curriculum.total_steps += steps_this_phase
 
-        ckpt = out_dir / f"checkpoint_phase_{phase:03d}"
+        ckpt = out_dir / f"checkpoint_phase_{curriculum.phase + 1:03d}"
         model.save_pretrained(ckpt)
         print(f"  Checkpoint → {ckpt}")
 
-        curriculum.refresh(model, tokenizer, phase)
+        curriculum.refresh(model, tokenizer, out_dir)
 
-    log_path = out_dir / "curriculum_log.json"
-    with open(log_path, "w") as f:
-        json.dump(curriculum.phase_logs, f, indent=2)
-    print(f"\nCurriculum log → {log_path}")
-
+    # Final adapter
     final_path = out_dir / "final_adapter"
     model.save_pretrained(final_path)
     tokenizer.save_pretrained(final_path)
-    print(f"Final adapter  → {final_path}")
+    print(f"\nFinal adapter → {final_path}")
+    print(f"Curriculum log → {out_dir}/curriculum_state.json")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -396,16 +543,33 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", choices=list(MODEL_REGISTRY.keys()),
-                        default="llama-3-8b")
-    parser.add_argument("--max-steps",  type=int, default=400)
+                        default="qwen-2.5-7b")
+    parser.add_argument("--max-steps",  type=int,  default=400)
     parser.add_argument("--output-dir", type=Path, default=Path("checkpoints"))
+    parser.add_argument("--resume",     action="store_true",
+                        help="Resume from saved curriculum_state.json")
     args = parser.parse_args()
 
     model_id = MODEL_REGISTRY[args.model]
+    out_dir  = args.output_dir / args.model
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     model, tokenizer = load_model_and_tokenizer(model_id)
 
-    print("\nBuilding curriculum…")
-    curriculum = build_curriculum(args.model)
+    state_path = out_dir / "curriculum_state.json"
+    if args.resume and state_path.exists():
+        print("\nResuming curriculum from saved state…")
+        curriculum = Curriculum.load_state(out_dir)
+        # Load the most recent checkpoint adapter weights
+        checkpoints = sorted(out_dir.glob("checkpoint_phase_*"))
+        if checkpoints:
+            latest = checkpoints[-1]
+            print(f"  Loading adapter weights from {latest}…")
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(model, latest)
+    else:
+        print("\nBuilding curriculum…")
+        curriculum = build_curriculum(args.model)
 
     run_training(model, tokenizer, curriculum, args)
 
