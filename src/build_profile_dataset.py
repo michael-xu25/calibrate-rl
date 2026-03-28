@@ -164,17 +164,30 @@ def print_summary(problems: List[dict], levels: List[int], n_per_cell: int) -> N
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build MATH profiling dataset")
     parser.add_argument(
-        "--levels", nargs="+", type=int, choices=[1, 2, 3], default=[1],
+        "--levels", nargs="+", type=int, choices=[1, 2, 3, 4, 5], default=[1],
         help="Which MATH levels to include (default: 1)",
+    )
+    parser.add_argument(
+        "--n-per-cell", type=int, default=None,
+        help="Problems per (subject, level) cell (default: 20 for single level, 15 for multi)",
+    )
+    parser.add_argument(
+        "--output", type=Path, default=None,
+        help="Output path (default: data/profile_dataset[_tag].json)",
     )
     args = parser.parse_args()
     levels = sorted(set(args.levels))
 
     # Problems per (subject, level) cell
-    n_per_cell = 15 if len(levels) > 1 else 20
+    if args.n_per_cell is not None:
+        n_per_cell = args.n_per_cell
+    else:
+        n_per_cell = 15 if len(levels) > 1 else 20
 
-    # Output path: profile_dataset.json for L1-only (backward compat), else profile_dataset_L1L2.json
-    if levels == [1]:
+    # Output path
+    if args.output is not None:
+        output_path = args.output
+    elif levels == [1]:
         output_path = Path("data/profile_dataset.json")
     else:
         tag = "L" + "L".join(str(l) for l in levels)

@@ -51,7 +51,7 @@ GOLDILOCKS_FILES = {
 }
 
 EVAL_RESULTS_PATH = Path("data/evaluation_results_L1L2.json")
-RESERVE_POOL_PATH = Path("data/profile_dataset_L1L2.json")
+RESERVE_POOL_PATH = Path("data/profile_dataset_L1L2L3.json")
 
 # ── Curriculum parameters ──────────────────────────────────────────────────────
 
