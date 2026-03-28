@@ -243,8 +243,21 @@ class Curriculum:
 
 # ── Model loading — H100 optimized ────────────────────────────────────────────
 
+def _flash_attn_available() -> bool:
+    try:
+        import flash_attn  # noqa: F401
+        # Package present — but also needs CUDA + a compatible GPU (Ampere+)
+        return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+    except ImportError:
+        return False
+
+
 def load_model_and_tokenizer(model_id: str):
-    print(f"\nLoading {model_id} (H100 / full bf16)…")
+    use_fa2 = _flash_attn_available()
+    attn_impl = "flash_attention_2" if use_fa2 else "eager"
+    print(f"\nLoading {model_id} (bf16, attn={attn_impl})…")
+    if not use_fa2:
+        print("  flash-attn not found or GPU < Ampere — falling back to eager attention")
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
@@ -253,9 +266,9 @@ def load_model_and_tokenizer(model_id: str):
 
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        torch_dtype=torch.bfloat16,   # native H100 dtype — no quantization needed
+        torch_dtype=torch.bfloat16,
         device_map="auto",
-        attn_implementation="flash_attention_2",  # H100 supports FA2 natively
+        attn_implementation=attn_impl,
     )
 
     # r=32 affordable in full bf16 on H100 (vs r=16 with QLoRA on A10G)

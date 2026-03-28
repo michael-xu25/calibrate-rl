@@ -21,10 +21,11 @@ pip install -q \
     "trl>=0.8.6" \
     "peft>=0.10.0" \
     "accelerate>=0.28.0" \
-    "datasets>=2.18.0" \
-    "flash-attn>=2.5.0" --no-build-isolation
+    "datasets>=2.18.0"
 
-# bitsandbytes not needed on H100 (full bf16, no quantization)
+# flash-attn: install manually if you want it (takes ~15min to compile).
+# The training script auto-detects it and falls back to eager attention if absent.
+# To install: pip install flash-attn --no-build-isolation
 
 # ── Verify GPU ─────────────────────────────────────────────────────────────────
 echo "==> GPU:"
@@ -38,12 +39,17 @@ else:
     print('  WARNING: No GPU found')
 "
 
-# ── Verify Flash Attention 2 ───────────────────────────────────────────────────
+# ── Flash Attention 2 status ───────────────────────────────────────────────────
 python3 -c "
+import torch
 try:
-    import flash_attn; print(f'  flash-attn {flash_attn.__version__} OK')
+    import flash_attn
+    capable = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+    status = 'ENABLED' if capable else 'installed but GPU < Ampere, will use eager'
+    print(f'  flash-attn {flash_attn.__version__} — {status}')
 except ImportError:
-    print('  WARNING: flash-attn not available — training will still work but slower')
+    print('  flash-attn not installed — using eager attention (still works fine)')
+    print('  To enable: pip install flash-attn --no-build-isolation')
 "
 
 # ── Verify data files ──────────────────────────────────────────────────────────
