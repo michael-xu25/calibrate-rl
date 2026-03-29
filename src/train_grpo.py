@@ -447,25 +447,33 @@ def load_model_and_tokenizer(model_id: str):
 
 # ── Curriculum initialization ──────────────────────────────────────────────────
 
-def build_curriculum(model_key: str) -> Curriculum:
+def build_curriculum(model_key: str, static: bool = False) -> Curriculum:
     gold_path = GOLDILOCKS_FILES[model_key]
     if not gold_path.exists():
         raise FileNotFoundError(
             f"{gold_path} not found.\n"
-            f"Run: python src/export_goldilocks.py --results data/evaluation_results_L1L2.json"
+            f"Run: python src/export_goldilocks.py --results data/evaluation_results_full.json"
         )
 
     with open(gold_path) as f:
         goldilocks = json.load(f)
 
+    if static:
+        # Static baseline: ALL pre-identified Goldilocks problems as fixed active set.
+        # No reserve, no updates — trains on this set for the entire run.
+        # Fair comparison to dynamic: same data access (both use full pre-eval),
+        # only variable is whether the curriculum adapts during training.
+        active = {p["id"]: ProblemState(problem=p) for p in goldilocks}
+        print(f"  [static] Active: {len(active)} problems (all pre-identified Goldilocks)")
+        print(f"  [static] No reserve — curriculum frozen for entire run")
+        return Curriculum(active=active, reserve=[])
+
+    # Dynamic: seed active from up to TARGET_CURRICULUM Goldilocks problems,
+    # rest go into reserve along with all other non-saturated pool problems.
     seed   = goldilocks[:TARGET_CURRICULUM]
     active = {p["id"]: ProblemState(problem=p) for p in seed}
     active_ids = set(active.keys())
 
-    # Build reserve:
-    # - Remaining Goldilocks problems (guaranteed trainable on base model)
-    # - L1+L2 problems with pass_rate = 0 on base model (may become trainable)
-    # - Exclude pass_rate = 1 on base model — they'll never be Goldilocks
     reserve = [p for p in goldilocks[TARGET_CURRICULUM:]]
 
     if RESERVE_POOL_PATH.exists() and EVAL_RESULTS_PATH.exists():
@@ -474,7 +482,6 @@ def build_curriculum(model_key: str) -> Curriculum:
         with open(EVAL_RESULTS_PATH) as f:
             eval_results = json.load(f)
 
-        # Index base-model pass rates
         base_pass = {}
         for rec in eval_results.values():
             if model_key in rec.get("models", {}):
@@ -487,7 +494,7 @@ def build_curriculum(model_key: str) -> Curriculum:
             pr = base_pass.get(p["id"], -1)
             if pr >= 1.0:
                 saturated_excluded += 1
-                continue   # already perfect — waste to probe
+                continue
             reserve.append(p)
 
         print(f"  Excluded {saturated_excluded} base-model-saturated problems from reserve")
@@ -661,7 +668,7 @@ def main() -> None:
             model = PeftModel.from_pretrained(model, latest)
     else:
         print("\nBuilding curriculum…")
-        curriculum = build_curriculum(args.model)
+        curriculum = build_curriculum(args.model, static=args.static)
 
     run_training(model, tokenizer, curriculum, args)
 
