@@ -57,10 +57,10 @@ RESERVE_POOL_PATH = Path("data/profile_dataset_L1L2L3.json")
 
 STEPS_PER_PHASE      = 40     # gradient steps per phase before curriculum refresh
 N_ROLLOUTS_TRAIN     = 8      # rollouts GRPOTrainer generates per problem (for loss)
-N_ROLLOUTS_SCORE     = 4      # rollouts for curriculum scoring — enough to classify
-                               # saturated/trainable/unreachable; 5 distinct values:
-                               # 0, 0.25, 0.50, 0.75, 1.0
-SATURATE_THRESHOLD   = 0.75   # 3/4 correct → learned, evict (equiv. to 6/8)
+N_ROLLOUTS_SCORE     = 8      # rollouts for curriculum scoring — 9 distinct values
+                               # (0, 0.125, …, 1.0) giving 6 Goldilocks pass rates
+                               # before eviction vs only 2 with pass@4
+SATURATE_THRESHOLD   = 0.875  # 7/8 correct → learned, evict
 UNREACHABLE_PATIENCE = 2      # consecutive 0-pass evals before evicting
 TARGET_CURRICULUM    = 128    # active problems to maintain
 MIN_CURRICULUM       = 16     # stop training if pool falls below this
@@ -497,6 +497,52 @@ def build_curriculum(model_key: str) -> Curriculum:
     return Curriculum(active=active, reserve=reserve)
 
 
+# ── Held-out evaluation ────────────────────────────────────────────────────────
+
+def eval_heldout(model, tokenizer, heldout_path: Path, phase: int, out_dir: Path) -> None:
+    """
+    Evaluate current model on held-out problems (never seen during training).
+    Appends one row to heldout_results.jsonl after each phase so progress
+    is visible even if the job dies.
+    """
+    with open(heldout_path) as f:
+        problems = json.load(f)
+
+    print(f"\n[Phase {phase}] Held-out eval ({len(problems)} problems)…")
+    pass_rates = score_problems_batched(
+        [(p["id"], p) for p in problems],
+        model, tokenizer,
+        label="heldout",
+    )
+
+    by_level   = {1: [], 2: [], 3: []}
+    by_subject = {}
+    for p in problems:
+        pr = pass_rates.get(p["id"], 0.0)
+        by_level[p["level"]].append(pr)
+        by_subject.setdefault(p["subject"], []).append(pr)
+
+    overall = sum(pass_rates.values()) / len(pass_rates) if pass_rates else 0.0
+    result  = {
+        "phase":    phase,
+        "overall":  round(overall, 4),
+        "by_level": {f"L{l}": round(sum(v)/len(v), 4) if v else 0.0
+                     for l, v in by_level.items()},
+        "by_subject": {s: round(sum(v)/len(v), 4) for s, v in by_subject.items()},
+        "pass_rates": pass_rates,
+    }
+
+    # Append to JSONL so each phase is a row
+    log_path = out_dir / "heldout_results.jsonl"
+    with open(log_path, "a") as f:
+        f.write(json.dumps(result) + "\n")
+
+    print(
+        f"[Phase {phase}] Held-out — overall={overall:.3f}  "
+        + "  ".join(f"L{l}={result['by_level'][f'L{l}']:.3f}" for l in (1,2,3))
+    )
+
+
 # ── Training loop ──────────────────────────────────────────────────────────────
 
 def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
@@ -560,7 +606,16 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
         model.save_pretrained(ckpt)
         print(f"  Checkpoint → {ckpt}")
 
-        curriculum.refresh(model, tokenizer, out_dir)
+        # Held-out eval after every phase (same problems, never trained on)
+        if args.heldout.exists():
+            eval_heldout(model, tokenizer, args.heldout, curriculum.phase + 1, out_dir)
+
+        if args.static:
+            # Static baseline: skip curriculum refresh, train on same problems forever
+            curriculum.phase += 1
+            curriculum._save_state(out_dir)
+        else:
+            curriculum.refresh(model, tokenizer, out_dir)
 
     # Final adapter
     final_path = out_dir / "final_adapter"
@@ -578,12 +633,17 @@ def main() -> None:
                         default="qwen-2.5-7b")
     parser.add_argument("--max-steps",  type=int,  default=400)
     parser.add_argument("--output-dir", type=Path, default=Path("checkpoints"))
-    parser.add_argument("--resume",     action="store_true",
+    parser.add_argument("--resume",  action="store_true",
                         help="Resume from saved curriculum_state.json")
+    parser.add_argument("--static", action="store_true",
+                        help="Static baseline: no curriculum refresh (control experiment)")
+    parser.add_argument("--heldout", type=Path, default=Path("data/heldout_eval.json"),
+                        help="Held-out eval set evaluated after each phase")
     args = parser.parse_args()
 
-    model_id = MODEL_REGISTRY[args.model]
-    out_dir  = args.output_dir / args.model
+    model_id  = MODEL_REGISTRY[args.model]
+    run_label = "static" if args.static else "dynamic"
+    out_dir   = args.output_dir / f"{args.model}_{run_label}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model, tokenizer = load_model_and_tokenizer(model_id)
