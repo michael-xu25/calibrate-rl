@@ -50,7 +50,7 @@ GOLDILOCKS_FILES = {
     "qwen-2.5-7b": Path("data/goldilocks_qwen-2.5-7b.json"),
 }
 
-EVAL_RESULTS_PATH = Path("data/evaluation_results_full.json")   # full 630-problem pass@4 eval
+EVAL_RESULTS_PATH = Path("data/evaluation_results_full.json")   # full 630-problem pass@8 eval
 RESERVE_POOL_PATH = Path("data/profile_dataset_L1L2L3.json")
 
 # ── Curriculum parameters ──────────────────────────────────────────────────────
@@ -585,12 +585,13 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
             per_device_train_batch_size=8,
             gradient_accumulation_steps=2,
             learning_rate=1e-5,
-            warmup_steps=min(5, steps_this_phase // 4),
+            warmup_steps=min(5, steps_this_phase // 4) if curriculum.phase == 0 else 0,
             logging_steps=5,
             save_strategy="no",
             num_generations=N_ROLLOUTS_TRAIN,
             max_completion_length=GEN_MAX_NEW_TOKENS,
             temperature=GEN_TEMPERATURE,
+            beta=0.04,            # KL penalty coefficient (GRPO paper default)
             use_vllm=False,
             report_to="none",
             bf16=True,
