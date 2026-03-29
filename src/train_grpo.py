@@ -50,7 +50,7 @@ GOLDILOCKS_FILES = {
     "qwen-2.5-7b": Path("data/goldilocks_qwen-2.5-7b.json"),
 }
 
-EVAL_RESULTS_PATH = Path("data/evaluation_results_L1L2.json")
+EVAL_RESULTS_PATH = Path("data/evaluation_results_full.json")   # full 630-problem pass@4 eval
 RESERVE_POOL_PATH = Path("data/profile_dataset_L1L2L3.json")
 
 # ── Curriculum parameters ──────────────────────────────────────────────────────
@@ -65,6 +65,8 @@ UNREACHABLE_PATIENCE = 2      # consecutive 0-pass evals before evicting
 TARGET_CURRICULUM    = 128    # active problems to maintain
 MIN_CURRICULUM       = 16     # stop training if pool falls below this
 MAX_PROBE            = 40     # reserve candidates to probe per refresh
+RESERVE_PATIENCE     = 4      # consecutive 0/N probe fails → remove from reserve
+PROBE_DECAY          = 0.5    # each probe failure halves sampling probability
 
 # ── Generation parameters ──────────────────────────────────────────────────────
 
@@ -219,12 +221,13 @@ class ProblemState:
 
 @dataclass
 class Curriculum:
-    active:     Dict[str, ProblemState] = field(default_factory=dict)
-    reserve:    List[dict]              = field(default_factory=list)
-    evicted:    set                     = field(default_factory=set)
-    phase_logs: List[dict]              = field(default_factory=list)
-    phase:      int                     = 0
-    total_steps: int                    = 0
+    active:          Dict[str, ProblemState] = field(default_factory=dict)
+    reserve:         List[dict]              = field(default_factory=list)
+    reserve_strikes: Dict[str, int]          = field(default_factory=dict)
+    evicted:         set                     = field(default_factory=set)
+    phase_logs:      List[dict]              = field(default_factory=list)
+    phase:           int                     = 0
+    total_steps:     int                     = 0
 
     def size(self) -> int:
         return len(self.active)
@@ -269,33 +272,57 @@ class Curriculum:
             self.evicted.add(pid)
             del self.active[pid]
 
-        # Replenish from reserve — random sample so full pool explored over time.
-        # Includes 0/8 base-model problems; they get re-probed with the current
-        # (improving) model and enter if now in Goldilocks range.
+        # Replenish from reserve.
+        # Weighted sampling: each consecutive 0/N probe halves selection probability
+        # (PROBE_DECAY). After RESERVE_PATIENCE consecutive failures the problem is
+        # removed — it's unreachable at the model's current capability level and
+        # re-probing it wastes rollouts. Problems that eventually score > 0 get
+        # their strike count reset, so they'll re-enter rotation naturally if the
+        # model regresses (unlikely) or if they were just unlucky on early probes.
         needed = TARGET_CURRICULUM - self.size()
         added  = []
         if needed > 0 and self.reserve:
-            n_probe   = min(MAX_PROBE, len(self.reserve))
-            probe     = random.sample(self.reserve, n_probe)
-            print(f"[Phase {self.phase} refresh] Probing {n_probe} reserve candidates…")
-            scored    = score_problems_batched(
-                [(p["id"], p) for p in probe],
-                model, tokenizer,
-                label="probe",
-            )
-            # Remove added IDs from reserve in one pass (O(n) not O(n²))
-            to_add = {}
-            for prob in probe:
-                if len(to_add) >= needed:
-                    break
-                if 0.0 < scored.get(prob["id"], 0.0) < 1.0:
-                    to_add[prob["id"]] = prob
+            # Hard-remove problems that have exceeded patience
+            exhausted = {p["id"] for p in self.reserve
+                         if self.reserve_strikes.get(p["id"], 0) >= RESERVE_PATIENCE}
+            if exhausted:
+                self.reserve = [p for p in self.reserve if p["id"] not in exhausted]
+                for pid in exhausted:
+                    self.evicted.add(pid)
+                    self.reserve_strikes.pop(pid, None)
+                print(f"[Phase {self.phase} refresh] Removed {len(exhausted)} exhausted reserve problems")
 
-            added_ids = set(to_add.keys())
-            self.reserve = [r for r in self.reserve if r["id"] not in added_ids]
-            for pid, prob in to_add.items():
-                self.active[pid] = ProblemState(problem=prob)
-                added.append(pid)
+            if self.reserve:
+                # Weighted sample — problems with more strikes are less likely chosen
+                weights = [PROBE_DECAY ** self.reserve_strikes.get(p["id"], 0)
+                           for p in self.reserve]
+                n_probe = min(MAX_PROBE, len(self.reserve))
+                probe   = random.choices(self.reserve, weights=weights, k=n_probe)
+                probe   = list({p["id"]: p for p in probe}.values())  # deduplicate
+
+                print(f"[Phase {self.phase} refresh] Probing {len(probe)} reserve candidates…")
+                scored = score_problems_batched(
+                    [(p["id"], p) for p in probe],
+                    model, tokenizer,
+                    label="probe",
+                )
+
+                to_add = {}
+                for prob in probe:
+                    pid = prob["id"]
+                    pr  = scored.get(pid, 0.0)
+                    if pr == 0.0:
+                        self.reserve_strikes[pid] = self.reserve_strikes.get(pid, 0) + 1
+                    else:
+                        self.reserve_strikes[pid] = 0  # reset on any success
+                    if len(to_add) < needed and 0.0 < pr < 1.0:
+                        to_add[pid] = prob
+
+                added_ids = set(to_add.keys())
+                self.reserve = [r for r in self.reserve if r["id"] not in added_ids]
+                for pid, prob in to_add.items():
+                    self.active[pid] = ProblemState(problem=prob)
+                    added.append(pid)
 
         elapsed = time.monotonic() - t0
         log = {
@@ -322,9 +349,10 @@ class Curriculum:
 
     def _save_state(self, out_dir: Path) -> None:
         state = {
-            "phase":       self.phase,
-            "total_steps": self.total_steps,
-            "evicted":     list(self.evicted),
+            "phase":           self.phase,
+            "total_steps":     self.total_steps,
+            "evicted":         list(self.evicted),
+            "reserve_strikes": self.reserve_strikes,
             "active": [
                 {
                     "id":                    pid,
@@ -333,8 +361,8 @@ class Curriculum:
                 }
                 for pid, s in self.active.items()
             ],
-            "reserve": self.reserve,
-            "phase_logs": self.phase_logs,
+            "reserve":     self.reserve,
+            "phase_logs":  self.phase_logs,
         }
         path = out_dir / "curriculum_state.json"
         tmp  = path.with_suffix(".tmp")
@@ -355,6 +383,7 @@ class Curriculum:
         c = cls(
             active=active,
             reserve=state["reserve"],
+            reserve_strikes=state.get("reserve_strikes", {}),
             evicted=set(state["evicted"]),
             phase_logs=state["phase_logs"],
             phase=state["phase"],

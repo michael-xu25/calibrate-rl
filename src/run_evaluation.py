@@ -42,7 +42,7 @@ MODELS = {
     "llama-3-8b":  "meta-llama/llama-3-8b-instruct",
 }
 
-N_ROLLOUTS           = 8      # per problem; 9 distinct pass-rate values
+N_ROLLOUTS           = 4      # per problem (override with --rollouts)
 TEMPERATURE          = 0.8
 MAX_TOKENS           = 512
 INTER_PROBLEM_DELAY  = 3.0    # seconds to sleep between problems (rate-limit pacing)
@@ -336,7 +336,12 @@ def main() -> None:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--models", nargs="+", choices=list(MODELS.keys()),
                    default=list(MODELS.keys()))
+    p.add_argument("--rollouts", type=int, default=None,
+                   help="Override N_ROLLOUTS (default: 4)")
     args = p.parse_args()
+    if args.rollouts is not None:
+        global N_ROLLOUTS
+        N_ROLLOUTS = args.rollouts
     asyncio.run(main_async(args))
 
 
