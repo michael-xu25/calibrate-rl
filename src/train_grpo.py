@@ -55,13 +55,16 @@ RESERVE_POOL_PATH = Path("data/profile_dataset_L1L2L3.json")
 
 # ── Curriculum parameters ──────────────────────────────────────────────────────
 
-STEPS_PER_PHASE      = 20     # gradient steps per phase before curriculum refresh
-N_ROLLOUTS_EVAL      = 16     # rollouts per problem during scoring
-SATURATE_THRESHOLD   = 0.875  # pass_rate >= this → learned, evict
+STEPS_PER_PHASE      = 40     # gradient steps per phase before curriculum refresh
+N_ROLLOUTS_TRAIN     = 8      # rollouts GRPOTrainer generates per problem (for loss)
+N_ROLLOUTS_SCORE     = 4      # rollouts for curriculum scoring — enough to classify
+                               # saturated/trainable/unreachable; 5 distinct values:
+                               # 0, 0.25, 0.50, 0.75, 1.0
+SATURATE_THRESHOLD   = 0.75   # 3/4 correct → learned, evict (equiv. to 6/8)
 UNREACHABLE_PATIENCE = 2      # consecutive 0-pass evals before evicting
 TARGET_CURRICULUM    = 128    # active problems to maintain
 MIN_CURRICULUM       = 16     # stop training if pool falls below this
-MAX_PROBE            = 80     # max reserve candidates to probe per refresh
+MAX_PROBE            = 40     # reserve candidates to probe per refresh
 
 # ── Generation parameters ──────────────────────────────────────────────────────
 
@@ -129,8 +132,8 @@ def score_problems_batched(
     label: str = "scoring",
 ) -> Dict[str, float]:
     """
-    Score each problem with N_ROLLOUTS_EVAL rollouts using a single batched
-    generate call per problem (batch_size = N_ROLLOUTS_EVAL).
+    Score each problem with N_ROLLOUTS_SCORE rollouts using a single batched
+    generate call per problem (batch_size = N_ROLLOUTS_SCORE).
 
     This is ~16× faster than sequential calls because the H100 processes
     all rollouts in parallel rather than waiting for each to complete.
@@ -150,8 +153,8 @@ def score_problems_batched(
             input_len = enc["input_ids"].shape[1]
 
             # Repeat prompt N times → single batched generate call
-            input_ids      = enc["input_ids"].repeat(N_ROLLOUTS_EVAL, 1).to(model.device)
-            attention_mask = enc["attention_mask"].repeat(N_ROLLOUTS_EVAL, 1).to(model.device)
+            input_ids      = enc["input_ids"].repeat(N_ROLLOUTS_SCORE, 1).to(model.device)
+            attention_mask = enc["attention_mask"].repeat(N_ROLLOUTS_SCORE, 1).to(model.device)
 
             try:
                 outputs = model.generate(
@@ -165,7 +168,7 @@ def score_problems_batched(
                 )
                 texts = [
                     tokenizer.decode(outputs[j][input_len:], skip_special_tokens=True)
-                    for j in range(N_ROLLOUTS_EVAL)
+                    for j in range(N_ROLLOUTS_SCORE)
                 ]
             except torch.cuda.OutOfMemoryError:
                 # Fallback: score sequentially if this problem's prompt is unusually long
@@ -173,7 +176,7 @@ def score_problems_batched(
                 torch.cuda.empty_cache()
                 texts = []
                 single_input = enc.to(model.device)
-                for _ in range(N_ROLLOUTS_EVAL):
+                for _ in range(N_ROLLOUTS_SCORE):
                     out  = model.generate(
                         **single_input,
                         max_new_tokens=GEN_MAX_NEW_TOKENS,
@@ -197,7 +200,7 @@ def score_problems_batched(
             correct = sum(rewards)
             print(
                 f"  [{label}] {i+1:>3}/{len(items)}  "
-                f"{pid:<35}  pass={pr:.3f} ({correct}/{N_ROLLOUTS_EVAL})  "
+                f"{pid:<35}  pass={pr:.3f} ({correct}/{N_ROLLOUTS_SCORE})  "
                 f"eta {eta:.0f}s",
                 flush=True,
             )
@@ -503,7 +506,7 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
             warmup_steps=min(5, steps_this_phase // 4),
             logging_steps=5,
             save_strategy="no",
-            num_generations=N_ROLLOUTS_EVAL,
+            num_generations=N_ROLLOUTS_TRAIN,
             max_completion_length=GEN_MAX_NEW_TOKENS,
             temperature=GEN_TEMPERATURE,
             use_vllm=False,
