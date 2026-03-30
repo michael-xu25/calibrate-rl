@@ -118,7 +118,7 @@ Every 40 gradient steps = one phase. End of each phase:
 Phase length:             80 steps
 Training rollouts:        8 per problem (GRPOTrainer loss)
 Scoring rollouts:         8 per problem (pass@8) — 6 Goldilocks-zone values
-Held-out rollouts:        4 per problem (pass@4) — sufficient for trend signal
+Held-out eval:            greedy (1 deterministic pass) — standard MATH protocol, 4% overhead
 Saturation threshold:     7/8 (0.875)
 Unreachable patience:     3 consecutive 0/8 evals
 Target active pool:       150 problems (sorted by |pass_rate − 0.5|, highest signal first)
@@ -167,10 +167,16 @@ Problems that repeatedly fail probing aren't instantly removed — their selecti
 | Training (80 steps × batch 8 × 8 rollouts) | 5,120 | — |
 | Active scoring (150 problems × pass@8) | 1,200 | 23% |
 | Reserve probing (40 candidates × pass@8) | 320 | 6% |
-| Held-out eval (210 problems × **pass@4**) | 840 | 16% |
-| **Total overhead** | **2,360** | **46%** |
+| Held-out eval (210 problems × **greedy**) | 210 | 4% |
+| **Total overhead** | **1,730** | **34%** |
 
-Held-out eval uses pass@4 (not pass@8) because it only needs trend signal across phases, not per-problem precision. The standard error of the mean pass rate over 210 problems at pass@4 is ~1.7% — more than sufficient to track a learning curve. This halves held-out cost vs pass@8 (which would add 32% overhead, making total overhead ~62%).
+Held-out eval uses **greedy decoding** (one deterministic forward pass per problem):
+- Standard MATH benchmark protocol — directly comparable to published results
+- Measures the model's best answer, not a noisy stochastic sample → cleaner curve
+- SE of mean over 210 problems ≈ 3.5%, sufficient to track trends across 6 phases
+- 4% overhead vs 16% (pass@4) or 33% (pass@8)
+
+Curriculum scoring still uses pass@8 because individual eviction decisions need precision. The held-out curve only needs to track a trend — 6 data points over 480 steps, not per-problem diagnostics. Both eval types happen at the same moment: end of every 80-step phase.
 
 ---
 

@@ -62,10 +62,6 @@ N_ROLLOUTS_TRAIN     = 8      # rollouts GRPOTrainer generates per problem (for 
 N_ROLLOUTS_SCORE     = 8      # rollouts for curriculum scoring — 9 distinct pass_rate values
                                # (0, 0.125, …, 1.0) giving 6 Goldilocks levels; pass@4
                                # gives only 3, making eviction thresholds too coarse
-N_ROLLOUTS_HELDOUT   = 4      # rollouts for held-out eval — less than scoring because we
-                               # only need trend signal across phases, not per-problem precision.
-                               # Standard error of mean over 210 problems at pass@4 ≈ 1.7%,
-                               # more than sufficient for a learning curve.
 SATURATE_THRESHOLD   = 0.875  # 7/8 correct → learned, evict. Advantage at this point
                                # is only 0.22 per rollout (vs 0.50 at p=0.5). Not worth keeping.
 UNREACHABLE_PATIENCE = 3      # consecutive 0/8 evals before evicting (3 reduces noise-driven
@@ -568,20 +564,52 @@ def build_curriculum(model_key: str, static: bool = False) -> Curriculum:
 
 def eval_heldout(model, tokenizer, heldout_path: Path, phase: int, out_dir: Path) -> None:
     """
-    Evaluate current model on held-out problems (never seen during training).
-    Appends one row to heldout_results.jsonl after each phase so progress
-    is visible even if the job dies.
+    Evaluate current model on held-out problems using greedy decoding (pass@1).
+
+    Greedy is the standard MATH benchmark protocol and is the right choice here:
+    - Deterministic: running the same checkpoint twice gives the same number.
+    - Measures the model's best answer, not a noisy sample — cleaner learning curve.
+    - 1 forward pass per problem (vs 4 for pass@4): overhead is 210/5120 ≈ 4%.
+    - SE of mean over 210 problems ≈ 3.5%, sufficient to track trends across 6 phases.
+    Curriculum scoring still uses pass@8 (N_ROLLOUTS_SCORE) because per-problem
+    eviction decisions need precision; the held-out curve only needs trend signal.
     """
     with open(heldout_path) as f:
         problems = json.load(f)
 
-    print(f"\n[Phase {phase}] Held-out eval ({len(problems)} problems, pass@{N_ROLLOUTS_HELDOUT})…")
-    pass_rates = score_problems_batched(
-        [(p["id"], p) for p in problems],
-        model, tokenizer,
-        label="heldout",
-        n_rollouts=N_ROLLOUTS_HELDOUT,
-    )
+    print(f"\n[Phase {phase}] Held-out eval ({len(problems)} problems, greedy)…")
+
+    model.eval()
+    pass_rates: Dict[str, float] = {}
+    t_start = time.monotonic()
+
+    with torch.inference_mode():
+        for i, p in enumerate(problems):
+            prompt = build_prompt(p["problem"])
+            enc    = tokenizer(prompt, return_tensors="pt",
+                               truncation=True, max_length=1024).to(model.device)
+            input_len = enc["input_ids"].shape[1]
+
+            out  = model.generate(
+                **enc,
+                max_new_tokens=GEN_MAX_NEW_TOKENS,
+                do_sample=False,          # greedy — no temperature, no sampling
+                pad_token_id=tokenizer.eos_token_id,
+            )
+            text   = tokenizer.decode(out[0][input_len:], skip_special_tokens=True)
+            reward = score(text, p["answer"])
+            pass_rates[p["id"]] = float(reward)
+
+            elapsed = time.monotonic() - t_start
+            rate    = (i + 1) / elapsed
+            eta     = (len(problems) - i - 1) / rate if rate > 0 else 0
+            print(
+                f"  [heldout] {i+1:>3}/{len(problems)}  "
+                f"{p['id']:<35}  {'✓' if reward else '✗'}  eta {eta:.0f}s",
+                flush=True,
+            )
+
+    model.train()
 
     by_level   = {1: [], 2: [], 3: []}
     by_subject = {}
