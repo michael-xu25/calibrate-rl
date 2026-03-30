@@ -761,6 +761,14 @@ def main() -> None:
         print("\nBuilding curriculum…")
         curriculum = build_curriculum(args.model, static=args.static)
 
+        # Phase 0: eval base model on held-out set before any training.
+        # This is the anchor point for the learning curve — without it you
+        # can't see where the model started or how much RL actually helped.
+        # Skipped on resume because the base model no longer exists at that point.
+        if args.heldout.exists():
+            print("\nPhase 0 — base model eval (before any training)…")
+            eval_heldout(model, tokenizer, args.heldout, phase=0, out_dir=out_dir)
+
     run_training(model, tokenizer, curriculum, args)
 
 
