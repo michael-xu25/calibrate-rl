@@ -55,15 +55,26 @@ RESERVE_POOL_PATH = Path("data/profile_dataset_L1L2L3.json")
 
 # ── Curriculum parameters ──────────────────────────────────────────────────────
 
-STEPS_PER_PHASE      = 40     # gradient steps per phase before curriculum refresh
+STEPS_PER_PHASE      = 80     # gradient steps per phase before curriculum refresh.
+                               # At 150 active problems and batch_size=8: each problem
+                               # gets ~5 training presentations per phase before rescoring.
 N_ROLLOUTS_TRAIN     = 8      # rollouts GRPOTrainer generates per problem (for loss)
-N_ROLLOUTS_SCORE     = 8      # rollouts for curriculum scoring — 9 distinct values
-                               # (0, 0.125, …, 1.0) giving 6 Goldilocks pass rates
-                               # before eviction vs only 2 with pass@4
-SATURATE_THRESHOLD   = 0.875  # 7/8 correct → learned, evict
-UNREACHABLE_PATIENCE = 3      # consecutive 0-pass evals before evicting (3 reduces noise-driven evictions)
-TARGET_CURRICULUM    = 64     # active problems to maintain — each gets ~5 presentations per phase
-                               # (vs 2.5 at 128), giving more signal per rescore cycle
+N_ROLLOUTS_SCORE     = 8      # rollouts for curriculum scoring — 9 distinct pass_rate values
+                               # (0, 0.125, …, 1.0) giving 6 Goldilocks levels; pass@4
+                               # gives only 3, making eviction thresholds too coarse
+N_ROLLOUTS_HELDOUT   = 4      # rollouts for held-out eval — less than scoring because we
+                               # only need trend signal across phases, not per-problem precision.
+                               # Standard error of mean over 210 problems at pass@4 ≈ 1.7%,
+                               # more than sufficient for a learning curve.
+SATURATE_THRESHOLD   = 0.875  # 7/8 correct → learned, evict. Advantage at this point
+                               # is only 0.22 per rollout (vs 0.50 at p=0.5). Not worth keeping.
+UNREACHABLE_PATIENCE = 3      # consecutive 0/8 evals before evicting (3 reduces noise-driven
+                               # evictions — a 10% pass_rate problem has real chance of 0/8)
+TARGET_CURRICULUM    = 150    # active problems to maintain. Chosen so each problem gets
+                               # ~5 presentations per 80-step phase (80×8/150 ≈ 4.3).
+                               # Below 128 → gradient correlation increases (same problems
+                               # repeat too often); above 200 → presentations drop below 3×
+                               # and eviction decisions become noise-driven.
 MIN_CURRICULUM       = 16     # stop training if pool falls below this
 MAX_PROBE            = 40     # reserve candidates to probe per refresh
 RESERVE_PATIENCE     = 4      # consecutive 0/N probe fails → remove from reserve
@@ -129,16 +140,17 @@ def build_prompt(problem_text: str) -> str:
 # ── Batched scoring ────────────────────────────────────────────────────────────
 
 def score_problems_batched(
-    items: List[Tuple[str, dict]],   # [(problem_id, problem_dict), ...]
+    items:      List[Tuple[str, dict]],   # [(problem_id, problem_dict), ...]
     model,
     tokenizer,
-    label: str = "scoring",
+    label:      str = "scoring",
+    n_rollouts: int = N_ROLLOUTS_SCORE,   # caller can override (e.g. N_ROLLOUTS_HELDOUT)
 ) -> Dict[str, float]:
     """
-    Score each problem with N_ROLLOUTS_SCORE rollouts using a single batched
-    generate call per problem (batch_size = N_ROLLOUTS_SCORE).
+    Score each problem with n_rollouts rollouts using a single batched
+    generate call per problem (batch_size = n_rollouts).
 
-    This is ~16× faster than sequential calls because the H100 processes
+    This is ~8-16× faster than sequential calls because the H100 processes
     all rollouts in parallel rather than waiting for each to complete.
 
     Falls back to sequential if the batch OOMs (very long problems).
@@ -155,9 +167,9 @@ def score_problems_batched(
             )
             input_len = enc["input_ids"].shape[1]
 
-            # Repeat prompt N times → single batched generate call
-            input_ids      = enc["input_ids"].repeat(N_ROLLOUTS_SCORE, 1).to(model.device)
-            attention_mask = enc["attention_mask"].repeat(N_ROLLOUTS_SCORE, 1).to(model.device)
+            # Repeat prompt n_rollouts times → single batched generate call
+            input_ids      = enc["input_ids"].repeat(n_rollouts, 1).to(model.device)
+            attention_mask = enc["attention_mask"].repeat(n_rollouts, 1).to(model.device)
 
             try:
                 outputs = model.generate(
@@ -171,7 +183,7 @@ def score_problems_batched(
                 )
                 texts = [
                     tokenizer.decode(outputs[j][input_len:], skip_special_tokens=True)
-                    for j in range(N_ROLLOUTS_SCORE)
+                    for j in range(n_rollouts)
                 ]
             except torch.cuda.OutOfMemoryError:
                 # Fallback: score sequentially if this problem's prompt is unusually long
@@ -179,7 +191,7 @@ def score_problems_batched(
                 torch.cuda.empty_cache()
                 texts = []
                 single_input = enc.to(model.device)
-                for _ in range(N_ROLLOUTS_SCORE):
+                for _ in range(n_rollouts):
                     out  = model.generate(
                         **single_input,
                         max_new_tokens=GEN_MAX_NEW_TOKENS,
@@ -203,7 +215,7 @@ def score_problems_batched(
             correct = sum(rewards)
             print(
                 f"  [{label}] {i+1:>3}/{len(items)}  "
-                f"{pid:<35}  pass={pr:.3f} ({correct}/{N_ROLLOUTS_SCORE})  "
+                f"{pid:<35}  pass={pr:.3f} ({correct}/{n_rollouts})  "
                 f"eta {eta:.0f}s",
                 flush=True,
             )
@@ -476,25 +488,47 @@ def build_curriculum(model_key: str, static: bool = False) -> Curriculum:
         goldilocks = json.load(f)
 
     if static:
-        # Static baseline: ALL pre-identified Goldilocks problems as fixed active set.
-        # No reserve, no updates — trains on this set for the entire run.
-        # Fair comparison to dynamic: same data access (both use full pre-eval),
-        # only variable is whether the curriculum adapts during training.
-        active = {p["id"]: ProblemState(problem=p) for p in goldilocks}
-        print(f"  [static] Active: {len(active)} problems (all pre-identified Goldilocks)")
+        # Static baseline: ALL 630 training problems, never updated.
+        # This is the realistic practitioner baseline — no pre-filtering, just
+        # train on your full dataset. Only Goldilocks problems produce nonzero
+        # gradient; saturated and unreachable problems silently waste compute.
+        # Comparing dynamic (smart curriculum) vs this shows total value of
+        # curriculum management: filtering + adaptation combined.
+        if not RESERVE_POOL_PATH.exists():
+            raise FileNotFoundError(f"Full pool not found: {RESERVE_POOL_PATH}")
+        with open(RESERVE_POOL_PATH) as f:
+            full_pool = json.load(f)
+        active = {p["id"]: ProblemState(problem=p) for p in full_pool}
+        print(f"  [static] Active: {len(active)} problems (full 630-problem pool, no filtering)")
         print(f"  [static] No reserve — curriculum frozen for entire run")
         return Curriculum(active=active, reserve=[])
 
-    # Dynamic: seed active with ALL pre-identified Goldilocks — identical starting
-    # set to the static baseline. This removes the starting-set confound: both
-    # conditions begin with the same problems and same gradient signal. The only
-    # variable is whether we evict saturated problems and promote from reserve.
+    # ── Dynamic curriculum ───────────────────────────────────────────────────────
     #
-    # Reserve = unreachable problems (pass=0 at baseline) that may unlock as the
-    # model improves. Goldilocks overflow no longer goes to reserve — it's all active.
-    active     = {p["id"]: ProblemState(problem=p) for p in goldilocks}
+    # Seed selection: sort Goldilocks by proximity to pass_rate=0.5.
+    # The per-rollout advantage magnitude is 2p(1-p), maximized at p=0.5:
+    #   p=0.5  → advantage=0.50 (maximum signal)
+    #   p=0.25 → advantage=0.375
+    #   p=0.75 → advantage=0.375
+    #   p=0.125→ advantage=0.219 (near-unreachable, low signal)
+    #   p=0.875→ advantage=0.219 (near-saturated, low signal, will be evicted soon)
+    #
+    # Starting with the highest-signal problems maximizes useful gradient in phase 1.
+    # Low-signal overflow Goldilocks go to the reserve as first-priority fill.
+    goldilocks_sorted = sorted(goldilocks, key=lambda p: abs(p["pass_rate"] - 0.5))
+    seed     = goldilocks_sorted[:TARGET_CURRICULUM]
+    overflow = goldilocks_sorted[TARGET_CURRICULUM:]   # known Goldilocks, lower signal
+
+    active     = {p["id"]: ProblemState(problem=p) for p in seed}
     active_ids = set(active.keys())
-    reserve    = []
+
+    # Reserve: two tiers, differentiated by initial strike count.
+    # Tier 1 — overflow Goldilocks (strikes=0): known to produce gradient, promoted first.
+    # Tier 2 — unreachable problems (strikes=1): half the probe probability of tier 1.
+    #   This biases early probing toward known-useful problems without hard-excluding
+    #   unreachable ones (which may unlock as the model improves).
+    reserve        = [p for p in overflow]
+    reserve_strikes = {}   # tier 1: strikes=0 (default, not set)
 
     if RESERVE_POOL_PATH.exists() and EVAL_RESULTS_PATH.exists():
         with open(RESERVE_POOL_PATH) as f:
@@ -509,22 +543,25 @@ def build_curriculum(model_key: str, static: bool = False) -> Curriculum:
 
         saturated_excluded = 0
         for p in full_pool:
-            if p["id"] in active_ids:
-                continue                     # already active
+            if p["id"] in active_ids or p["id"] in {r["id"] for r in reserve}:
+                continue
             pr = base_pass.get(p["id"], -1)
             if pr >= 1.0:
-                saturated_excluded += 1      # base-model-saturated: skip
+                saturated_excluded += 1
                 continue
-            if pr > 0.0:
-                continue                     # shouldn't happen (Goldilocks are all active)
-            reserve.append(p)               # unreachable at baseline → reserve
+            if pr == 0.0:
+                reserve.append(p)
+                reserve_strikes[p["id"]] = 1   # tier 2: start at 1 strike (half priority)
 
         print(f"  Excluded {saturated_excluded} base-model-saturated problems from reserve")
 
-    n_gold = len(active)
-    print(f"  Active:  {n_gold} problems (all pre-identified Goldilocks)")
-    print(f"  Reserve: {len(reserve)} problems (unreachable at baseline, may unlock during training)")
-    return Curriculum(active=active, reserve=reserve, target_size=n_gold)
+    n_overflow = len(overflow)
+    n_unreach  = len(reserve) - n_overflow
+    print(f"  Active:  {len(active)} problems (highest-signal Goldilocks, sorted by |pr−0.5|)")
+    print(f"  Reserve: {len(reserve)} problems  "
+          f"({n_overflow} Goldilocks overflow [tier 1]  +  {n_unreach} unreachable [tier 2])")
+    return Curriculum(active=active, reserve=reserve,
+                      reserve_strikes=reserve_strikes, target_size=TARGET_CURRICULUM)
 
 
 # ── Held-out evaluation ────────────────────────────────────────────────────────
@@ -538,11 +575,12 @@ def eval_heldout(model, tokenizer, heldout_path: Path, phase: int, out_dir: Path
     with open(heldout_path) as f:
         problems = json.load(f)
 
-    print(f"\n[Phase {phase}] Held-out eval ({len(problems)} problems)…")
+    print(f"\n[Phase {phase}] Held-out eval ({len(problems)} problems, pass@{N_ROLLOUTS_HELDOUT})…")
     pass_rates = score_problems_batched(
         [(p["id"], p) for p in problems],
         model, tokenizer,
         label="heldout",
+        n_rollouts=N_ROLLOUTS_HELDOUT,
     )
 
     by_level   = {1: [], 2: [], 3: []}
@@ -607,7 +645,8 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
             max_steps=steps_this_phase,
             per_device_train_batch_size=8,
             gradient_accumulation_steps=2,
-            learning_rate=1e-5,
+            learning_rate=2e-5,   # 2e-5 > 1e-5: need enough model movement per phase
+                                  # to trigger saturation events within a 480-step budget
             warmup_steps=min(5, steps_this_phase // 4) if curriculum.phase == 0 else 0,
             logging_steps=5,
             save_strategy="no",
@@ -662,7 +701,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", choices=list(MODEL_REGISTRY.keys()),
                         default="qwen-2.5-7b")
-    parser.add_argument("--max-steps",  type=int,  default=400)
+    parser.add_argument("--max-steps",  type=int,  default=480)  # 6 phases × 80 steps
     parser.add_argument("--output-dir", type=Path, default=Path("checkpoints"))
     parser.add_argument("--resume",  action="store_true",
                         help="Resume from saved curriculum_state.json")

@@ -41,30 +41,27 @@ A problem at 7/8 pass rate has mean advantage ≈ 0.125 — almost nothing. Wait
 
 Obvious: any RL training improves on base. The base model comparison doesn't tell you anything about curriculum strategy.
 
-### Why not compare dynamic to a random-subset static baseline?
+### The baseline: naive RL on all 630 problems
 
-This is the key design decision we had to think through carefully.
+The static baseline trains on the full 630-problem pool with no filtering, never updated. This is the realistic practitioner baseline — what you'd do if you just handed RL your entire dataset. The key fact, invisible to the practitioner:
 
-Suppose static uses 63 problems and dynamic can access 630. If dynamic wins, you've just proven "more training data = better results" — not "adaptive curriculum selection = better results." That's a trivially true and uninteresting claim.
+- **Qwen**: only 206/630 = 32.7% of problems are Goldilocks. Every batch wastes ~67% of compute on zero-gradient problems.
+- **Llama**: only 372/630 = 59% are Goldilocks. Still 41% waste.
 
-In RL with binary rewards, the comparison is even more subtle: **problems outside the Goldilocks zone contribute exactly zero gradient regardless of how many you include.** Including 500 saturated or unreachable problems in a static training set doesn't help at all — they just don't fire. So "more problems" isn't trivially better even in principle.
-
-### The fair comparison
-
-Both conditions have access to **exactly the same set of pre-identified Goldilocks problems** (from the full pass@8 pre-eval). The only difference is:
+Dynamic curriculum automatically focuses on the productive subset and adapts as it changes. The comparison shows the **total value of curriculum management**: both the initial filtering and the ongoing adaptation.
 
 | | Dynamic | Static |
 |---|---|---|
-| Starting active set | **All pre-identified Goldilocks** (same as static) | All pre-identified Goldilocks |
-| Reserve | Unreachable problems (pass=0 at baseline) | None |
-| During training | Evicts saturated/unreachable, promotes reserve problems | Fixed — never changes |
-| Can discover harder problems | Yes — previously unreachable problems enter as model improves | No |
-| Wastes compute on near-saturated | No — evicts at ≥7/8 | Yes — keeps grinding them |
+| Starting active set | 150 highest-signal Goldilocks (sorted by \|pr−0.5\|) | All 630 problems |
+| Reserve | Goldilocks overflow + unreachable problems | None |
+| During training | Evicts saturated/unreachable, promotes reserve | Fixed forever |
+| Useful gradient fraction | ~100% of each batch | 33–59% of each batch |
+| Can discover harder problems | Yes — reserve problems enter as model improves | No |
 
 The hypothesis is that dynamic wins because:
-1. As problems saturate, static keeps computing near-zero gradient on them; dynamic evicts and replaces
-2. Dynamic can discover L3 problems that become Goldilocks as the model improves; static is fundamentally capped at the initial inventory
-3. The effective **Goldilocks fraction** of the active set stays high in dynamic mode and collapses in static — this is the mechanism we measure directly
+1. Every training step is concentrated on problems that actually produce gradient
+2. As Goldilocks problems saturate, static grinds near-zero gradient on them; dynamic evicts and replaces with harder ones
+3. The active Goldilocks fraction stays near 100% in dynamic mode and collapses in static
 
 ### Evaluation: held-out set
 
@@ -118,25 +115,42 @@ Every 40 gradient steps = one phase. End of each phase:
 5. Save curriculum state atomically to `curriculum_state.json`
 
 ```
-Phase length:             40 steps
-Scoring rollouts:         8 per problem (pass@8)
+Phase length:             80 steps
 Training rollouts:        8 per problem (GRPOTrainer loss)
+Scoring rollouts:         8 per problem (pass@8) — 6 Goldilocks-zone values
+Held-out rollouts:        4 per problem (pass@4) — sufficient for trend signal
 Saturation threshold:     7/8 (0.875)
 Unreachable patience:     3 consecutive 0/8 evals
-Target active pool:       64 problems
+Target active pool:       150 problems (sorted by |pass_rate − 0.5|, highest signal first)
 Min pool to continue:     16 problems
 Max reserve probed:       40 per refresh
 Reserve patience:         4 consecutive 0/8 probes → hard-remove
 Probe decay:              0.5× per consecutive failure
+Reserve tier 1:           Goldilocks overflow (known gradient, strikes=0)
+Reserve tier 2:           Unreachable at baseline (strikes=1, half probe priority)
+Total training steps:     480 (6 phases)
 ```
 
-### Why dynamic starts with all Goldilocks (same as static)
+### Seed selection: sort by proximity to pass_rate=0.5
 
-The starting active set is set to the full pre-identified Goldilocks inventory — the same set static uses. This removes the most important confound: if dynamic started with a subset (e.g., 64 problems) while static started with all 206, static would have 3× more gradient signal per phase early in training. Static could win simply because of that head start, not because fixed curricula are better.
+The per-rollout advantage magnitude for a problem with pass_rate p is `2p(1-p)`, maximized at p=0.5:
 
-By starting both conditions identically, the only variable is whether the curriculum updates. The reserve for dynamic contains the unreachable problems (pass=0 at baseline) — the harder problems that may unlock as the model improves through training.
+| pass_rate | advantage magnitude |
+|---|---|
+| 0.125 | 0.22 — near-unreachable, low signal |
+| 0.25 | 0.375 |
+| **0.5** | **0.50 — maximum gradient signal** |
+| 0.75 | 0.375 |
+| 0.875 | 0.22 — near-saturated, will be evicted soon anyway |
 
-`target_size` (used for replenishment in `refresh()`) is set dynamically to `len(goldilocks)` at build time, so it scales correctly per model rather than being a hardcoded constant.
+Seeding with the 150 problems closest to p=0.5 maximizes gradient signal from phase 1. The remaining Goldilocks (further from 0.5, lower immediate signal) go to the reserve as **tier-1** fill — they're known to produce gradient and are preferred over unreachable problems when replenishing. Unreachable problems are **tier-2** reserve, given one initial "strike" to halve their probe probability relative to tier-1.
+
+### Why TARGET_CURRICULUM = 150
+
+At 80 steps per phase with batch_size=8: each active problem gets ~5 training presentations per phase (80×8/150 ≈ 4.3). This is the key ratio:
+- Too few active (< 128): consecutive batches repeat the same problems → high gradient correlation, less stable updates, poor subject diversity
+- Too many active (> 200): presentations per problem drop below 3× → eviction decisions are based on underpowered pass_rate estimates, curriculum is noise-driven
+- 150 sits in the sweet spot, with gradient diversity across 7 subjects × 3 levels
 
 ### Why UNREACHABLE_PATIENCE = 3 (not 2)
 
@@ -146,14 +160,17 @@ At G=8, the variance on a problem with true pass_rate=0.1 is non-trivial — the
 
 Problems that repeatedly fail probing aren't instantly removed — their selection probability decays by 0.5× per consecutive 0/8 result (`PROBE_DECAY=0.5`). After 4 consecutive failures (`RESERVE_PATIENCE=4`) they're hard-removed. This prevents a handful of impossible problems from monopolizing probe slots every phase.
 
-### Compute overhead analysis
+### Compute overhead analysis (per phase, 80 steps)
 
-For Qwen (206 Goldilocks, 161 unreachable reserve): scoring 206 active problems at pass@8 = 1,648 forward passes per phase. Probing up to 40 reserve candidates = 320 more. Training 40 steps at batch size 8 × 8 rollouts = 2,560 forward passes.
+| Component | Forward passes | % of training |
+|---|---|---|
+| Training (80 steps × batch 8 × 8 rollouts) | 5,120 | — |
+| Active scoring (150 problems × pass@8) | 1,200 | 23% |
+| Reserve probing (40 candidates × pass@8) | 320 | 6% |
+| Held-out eval (210 problems × **pass@4**) | 840 | 16% |
+| **Total overhead** | **2,360** | **46%** |
 
-- Active scoring overhead: 1648 / (1648 + 2560) ≈ **39%**
-- Total scoring (active + probe): 1968 / (1968 + 2560) ≈ **44%**
-
-This is the tax for the adaptive mechanism with a fair starting set. It's higher than a truncated-curriculum design, but it's the honest cost — and static pays the same active-scoring cost without the replenishment benefit. The experiment tests whether that cost is worth it.
+Held-out eval uses pass@4 (not pass@8) because it only needs trend signal across phases, not per-problem precision. The standard error of the mean pass rate over 210 problems at pass@4 is ~1.7% — more than sufficient to track a learning curve. This halves held-out cost vs pass@8 (which would add 32% overhead, making total overhead ~62%).
 
 ---
 
@@ -170,7 +187,7 @@ This is the tax for the adaptive mechanism with a fair starting set. It's higher
 - **Flash Attention 2**: auto-detected (requires Ampere+ GPU and `flash-attn` package); falls back to eager
 - **Gradient checkpointing**: enabled; requires `model.enable_input_require_grads()` with PEFT (frozen base layers break checkpointing without it)
 - **KL penalty**: `beta=0.04` (GRPO paper default) — prevents reward hacking / mode collapse by penalizing the policy for drifting far from the reference model
-- **LR**: 1e-5, warmup only on phase 1; subsequent phases start at full LR to avoid 12.5% wasted steps per phase from re-warming
+- **LR**: 2e-5, warmup only on phase 1. Higher than the usual conservative 1e-5 because at 480 total steps, we need enough model movement per phase to trigger saturation events — the curriculum dynamics only become visible if problems actually saturate. Subsequent phases start at full LR to avoid 12.5% wasted warmup steps per phase.
 
 ### Why LoRA not full fine-tune
 
@@ -225,8 +242,8 @@ The clearest proof would be a learning curve where static plateaus (because most
 |---|---|
 | Build 630-problem L1L2L3 training pool | Done |
 | Build 210-problem held-out set | Done |
-| Pass@8 pre-eval (Qwen-2.5-7B) | ~370/630 in progress |
-| Pass@8 pre-eval (Llama-3-8B) | 0/630, starts after Qwen |
-| Export Goldilocks inventories | Pending pre-eval |
+| Pass@8 pre-eval (Qwen-2.5-7B) | Done — 206 Goldilocks, 161 unreachable |
+| Pass@8 pre-eval (Llama-3-8B) | Done — 372 Goldilocks, 154 unreachable |
+| Export Goldilocks inventories | Done |
 | Dynamic training run × 2 models | Pending |
 | Static training run × 2 models | Pending |
