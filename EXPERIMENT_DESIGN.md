@@ -55,9 +55,10 @@ Both conditions have access to **exactly the same set of pre-identified Goldiloc
 
 | | Dynamic | Static |
 |---|---|---|
-| Starting active set | Seed up to 64 Goldilocks problems | All pre-identified Goldilocks |
+| Starting active set | **All pre-identified Goldilocks** (same as static) | All pre-identified Goldilocks |
+| Reserve | Unreachable problems (pass=0 at baseline) | None |
 | During training | Evicts saturated/unreachable, promotes reserve problems | Fixed — never changes |
-| Can discover harder problems | Yes — L3 problems enter as model improves | No |
+| Can discover harder problems | Yes — previously unreachable problems enter as model improves | No |
 | Wastes compute on near-saturated | No — evicts at ≥7/8 | Yes — keeps grinding them |
 
 The hypothesis is that dynamic wins because:
@@ -129,11 +130,13 @@ Reserve patience:         4 consecutive 0/8 probes → hard-remove
 Probe decay:              0.5× per consecutive failure
 ```
 
-### Why TARGET_CURRICULUM = 64 (not 128)
+### Why dynamic starts with all Goldilocks (same as static)
 
-With 40 training steps, batch size 8, and 64 active problems, each problem gets seen roughly **5 times per phase** on average. At 128 problems that drops to 2.5 — the model barely sees each problem before the next rescore. More presentations per problem per phase means stronger gradient signal before eviction decisions are made, and fewer problems where we evict based on noisy single-observation pass rates.
+The starting active set is set to the full pre-identified Goldilocks inventory — the same set static uses. This removes the most important confound: if dynamic started with a subset (e.g., 64 problems) while static started with all 206, static would have 3× more gradient signal per phase early in training. Static could win simply because of that head start, not because fixed curricula are better.
 
-The tradeoff: smaller curriculum means less diversity within a phase, which can increase gradient correlation across steps. In practice, the effect is small because the 64 problems span 7 subjects and 3 levels.
+By starting both conditions identically, the only variable is whether the curriculum updates. The reserve for dynamic contains the unreachable problems (pass=0 at baseline) — the harder problems that may unlock as the model improves through training.
+
+`target_size` (used for replenishment in `refresh()`) is set dynamically to `len(goldilocks)` at build time, so it scales correctly per model rather than being a hardcoded constant.
 
 ### Why UNREACHABLE_PATIENCE = 3 (not 2)
 
@@ -145,12 +148,12 @@ Problems that repeatedly fail probing aren't instantly removed — their selecti
 
 ### Compute overhead analysis
 
-Scoring 64 active problems at pass@8 = 512 forward passes per phase. Probing up to 40 reserve candidates = 320 more. Training 40 steps at batch size 8 × 8 rollouts = 2,560 forward passes.
+For Qwen (206 Goldilocks, 161 unreachable reserve): scoring 206 active problems at pass@8 = 1,648 forward passes per phase. Probing up to 40 reserve candidates = 320 more. Training 40 steps at batch size 8 × 8 rollouts = 2,560 forward passes.
 
-- Active scoring overhead: 512 / (512 + 2560) ≈ **17%**
-- Total scoring (active + probe): 832 / (832 + 2560) ≈ **25%**
+- Active scoring overhead: 1648 / (1648 + 2560) ≈ **39%**
+- Total scoring (active + probe): 1968 / (1968 + 2560) ≈ **44%**
 
-That's the tax for the adaptive mechanism. The experiment tests whether it's worth paying.
+This is the tax for the adaptive mechanism with a fair starting set. It's higher than a truncated-curriculum design, but it's the honest cost — and static pays the same active-scoring cost without the replenishment benefit. The experiment tests whether that cost is worth it.
 
 ---
 

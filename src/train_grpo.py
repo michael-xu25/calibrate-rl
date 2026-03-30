@@ -229,6 +229,7 @@ class Curriculum:
     phase_logs:      List[dict]              = field(default_factory=list)
     phase:           int                     = 0
     total_steps:     int                     = 0
+    target_size:     int                     = TARGET_CURRICULUM  # replenishment target for refresh()
 
     def size(self) -> int:
         return len(self.active)
@@ -280,7 +281,7 @@ class Curriculum:
         # re-probing it wastes rollouts. Problems that eventually score > 0 get
         # their strike count reset, so they'll re-enter rotation naturally if the
         # model regresses (unlikely) or if they were just unlucky on early probes.
-        needed = TARGET_CURRICULUM - self.size()
+        needed = self.target_size - self.size()
         added  = []
         if needed > 0 and self.reserve:
             # Hard-remove problems that have exceeded patience
@@ -365,6 +366,7 @@ class Curriculum:
         state = {
             "phase":           self.phase,
             "total_steps":     self.total_steps,
+            "target_size":     self.target_size,
             "evicted":         list(self.evicted),
             "reserve_strikes": self.reserve_strikes,
             "active": [
@@ -402,6 +404,7 @@ class Curriculum:
             phase_logs=state["phase_logs"],
             phase=state["phase"],
             total_steps=state["total_steps"],
+            target_size=state.get("target_size", TARGET_CURRICULUM),
         )
         print(
             f"  Resumed from phase {c.phase}  "
@@ -482,13 +485,16 @@ def build_curriculum(model_key: str, static: bool = False) -> Curriculum:
         print(f"  [static] No reserve — curriculum frozen for entire run")
         return Curriculum(active=active, reserve=[])
 
-    # Dynamic: seed active from up to TARGET_CURRICULUM Goldilocks problems,
-    # rest go into reserve along with all other non-saturated pool problems.
-    seed   = goldilocks[:TARGET_CURRICULUM]
-    active = {p["id"]: ProblemState(problem=p) for p in seed}
+    # Dynamic: seed active with ALL pre-identified Goldilocks — identical starting
+    # set to the static baseline. This removes the starting-set confound: both
+    # conditions begin with the same problems and same gradient signal. The only
+    # variable is whether we evict saturated problems and promote from reserve.
+    #
+    # Reserve = unreachable problems (pass=0 at baseline) that may unlock as the
+    # model improves. Goldilocks overflow no longer goes to reserve — it's all active.
+    active     = {p["id"]: ProblemState(problem=p) for p in goldilocks}
     active_ids = set(active.keys())
-
-    reserve = [p for p in goldilocks[TARGET_CURRICULUM:]]
+    reserve    = []
 
     if RESERVE_POOL_PATH.exists() and EVAL_RESULTS_PATH.exists():
         with open(RESERVE_POOL_PATH) as f:
@@ -504,18 +510,21 @@ def build_curriculum(model_key: str, static: bool = False) -> Curriculum:
         saturated_excluded = 0
         for p in full_pool:
             if p["id"] in active_ids:
-                continue
+                continue                     # already active
             pr = base_pass.get(p["id"], -1)
             if pr >= 1.0:
-                saturated_excluded += 1
+                saturated_excluded += 1      # base-model-saturated: skip
                 continue
-            reserve.append(p)
+            if pr > 0.0:
+                continue                     # shouldn't happen (Goldilocks are all active)
+            reserve.append(p)               # unreachable at baseline → reserve
 
         print(f"  Excluded {saturated_excluded} base-model-saturated problems from reserve")
 
-    print(f"  Active:  {len(active)} problems")
-    print(f"  Reserve: {len(reserve)} problems")
-    return Curriculum(active=active, reserve=reserve)
+    n_gold = len(active)
+    print(f"  Active:  {n_gold} problems (all pre-identified Goldilocks)")
+    print(f"  Reserve: {len(reserve)} problems (unreachable at baseline, may unlock during training)")
+    return Curriculum(active=active, reserve=reserve, target_size=n_gold)
 
 
 # ── Held-out evaluation ────────────────────────────────────────────────────────
