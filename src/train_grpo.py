@@ -61,8 +61,9 @@ N_ROLLOUTS_SCORE     = 8      # rollouts for curriculum scoring — 9 distinct v
                                # (0, 0.125, …, 1.0) giving 6 Goldilocks pass rates
                                # before eviction vs only 2 with pass@4
 SATURATE_THRESHOLD   = 0.875  # 7/8 correct → learned, evict
-UNREACHABLE_PATIENCE = 2      # consecutive 0-pass evals before evicting
-TARGET_CURRICULUM    = 128    # active problems to maintain
+UNREACHABLE_PATIENCE = 3      # consecutive 0-pass evals before evicting (3 reduces noise-driven evictions)
+TARGET_CURRICULUM    = 64     # active problems to maintain — each gets ~5 presentations per phase
+                               # (vs 2.5 at 128), giving more signal per rescore cycle
 MIN_CURRICULUM       = 16     # stop training if pool falls below this
 MAX_PROBE            = 40     # reserve candidates to probe per refresh
 RESERVE_PATIENCE     = 4      # consecutive 0/N probe fails → remove from reserve
@@ -70,7 +71,7 @@ PROBE_DECAY          = 0.5    # each probe failure halves sampling probability
 
 # ── Generation parameters ──────────────────────────────────────────────────────
 
-GEN_MAX_NEW_TOKENS = 512
+GEN_MAX_NEW_TOKENS = 768   # 512 risks cutting off L3 chain-of-thought before <answer> tag
 GEN_TEMPERATURE    = 0.8
 GEN_TOP_P          = 0.95
 
@@ -325,13 +326,25 @@ class Curriculum:
                     added.append(pid)
 
         elapsed = time.monotonic() - t0
+
+        # Goldilocks fraction: fraction of active problems with 0 < pass_rate < 1
+        # This is the core diagnostic — if it collapses, the active set is full of
+        # saturated/unreachable problems and gradients are near zero.
+        n_active = self.size()
+        n_goldilocks = sum(
+            1 for pid in self.active
+            if 0.0 < pass_rates.get(pid, 0.0) < 1.0
+        )
+        goldilocks_frac = n_goldilocks / n_active if n_active > 0 else 0.0
+
         log = {
             "phase":             self.phase,
             "evict_saturated":   len(evict_sat),
             "evict_unreachable": len(evict_unreach),
             "added":             len(added),
-            "active_size":       self.size(),
+            "active_size":       n_active,
             "reserve_size":      len(self.reserve),
+            "goldilocks_frac":   round(goldilocks_frac, 3),
             "pass_rates":        pass_rates,
             "refresh_time_sec":  round(elapsed, 1),
         }
@@ -340,7 +353,8 @@ class Curriculum:
         print(
             f"[Phase {self.phase} refresh] "
             f"evicted(sat={len(evict_sat)} unreach={len(evict_unreach)})  "
-            f"added={len(added)}  active={self.size()}  reserve={len(self.reserve)}  "
+            f"added={len(added)}  active={n_active}  reserve={len(self.reserve)}  "
+            f"goldilocks={n_goldilocks}/{n_active} ({goldilocks_frac:.1%})  "
             f"({elapsed:.0f}s)"
         )
 
