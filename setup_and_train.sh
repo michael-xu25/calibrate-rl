@@ -23,10 +23,10 @@ pip install -q \
     "accelerate>=0.28.0" \
     "datasets>=2.18.0"
 
-# flash-attn: ~2-3× attention speedup on H100. Compile takes ~10-15 min but
-# subsequent runs skip it (wheel is cached). Required for best H100 utilization.
-echo "==> Installing flash-attn (may take ~10-15 min to compile; cached on reruns)…"
-pip install -q flash-attn --no-build-isolation
+# flash-attn: optional ~2-3× attention speedup on H100.
+# Requires a C++ compiler and CUDA headers in the image. If your environment
+# supports it, run once manually: pip install flash-attn --no-build-isolation
+# The training script auto-detects it and falls back to eager attention if absent.
 
 # ── Verify GPU ─────────────────────────────────────────────────────────────────
 echo "==> GPU:"
