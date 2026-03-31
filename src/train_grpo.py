@@ -62,10 +62,11 @@ N_ROLLOUTS_TRAIN     = 8      # rollouts GRPOTrainer generates per problem (for 
 N_ROLLOUTS_SCORE     = 8      # rollouts for curriculum scoring — 9 distinct pass_rate values
                                # (0, 0.125, …, 1.0) giving 6 Goldilocks levels; pass@4
                                # gives only 3, making eviction thresholds too coarse
-SATURATE_THRESHOLD   = 0.875  # 7/8 correct → learned, evict. Advantage at this point
-                               # is only 0.22 per rollout (vs 0.50 at p=0.5). Not worth keeping.
-UNREACHABLE_PATIENCE = 3      # consecutive 0/8 evals before evicting (3 reduces noise-driven
-                               # evictions — a 10% pass_rate problem has real chance of 0/8)
+SATURATE_THRESHOLD   = 0.875  # 7/8 correct → learned, send to cooldown. Advantage at this
+                               # point is only 0.22 per rollout (vs 0.50 at p=0.5).
+UNREACHABLE_PATIENCE = 3      # consecutive 0/8 evals before sending to cooldown (3 reduces
+                               # noise-driven evictions — a 10% pass_rate problem has real
+                               # chance of 0/8 twice by chance alone)
 TARGET_CURRICULUM    = 150    # active problems to maintain. Chosen so each problem gets
                                # ~5 presentations per 80-step phase (80×8/150 ≈ 4.3).
                                # Below 128 → gradient correlation increases (same problems
@@ -73,8 +74,17 @@ TARGET_CURRICULUM    = 150    # active problems to maintain. Chosen so each prob
                                # and eviction decisions become noise-driven.
 MIN_CURRICULUM       = 16     # stop training if pool falls below this
 MAX_PROBE            = 40     # reserve candidates to probe per refresh
-RESERVE_PATIENCE     = 4      # consecutive 0/N probe fails → remove from reserve
+RESERVE_PATIENCE     = 4      # consecutive 0/N probe fails → send to cooldown
 PROBE_DECAY          = 0.5    # each probe failure halves sampling probability
+MIN_PROMOTE_PASS_RATE = 0.25  # minimum pass_rate (2/8) to promote from reserve into active.
+                               # Filters noise: a true-5%-pass-rate problem has ~28% chance
+                               # of scoring 1/8 by luck on a single 8-rollout probe.
+SATURATE_COOLDOWN    = 2      # phases a saturated problem spends frozen before re-entering
+                               # reserve. 2 phases = 160 steps — enough model movement for
+                               # some previously-saturated problems to drop back to Goldilocks.
+UNREACHABLE_COOLDOWN = 1      # phases an unreachable problem spends frozen. Shorter because
+                               # the model may unlock easy problems quickly in early phases.
+MAX_COOLDOWN_CYCLES  = 2      # after this many cooldown cycles, permanently retire the problem.
 
 # ── Generation parameters ──────────────────────────────────────────────────────
 
@@ -238,6 +248,12 @@ class Curriculum:
     reserve:         List[dict]              = field(default_factory=list)
     reserve_strikes: Dict[str, int]          = field(default_factory=dict)
     evicted:         set                     = field(default_factory=set)
+    # cooldown: problems temporarily frozen, keyed by pid.
+    # Each entry: {"problem": dict, "thaw_phase": int, "initial_strikes": int}
+    # Problems sit here for N phases then re-enter reserve at reduced probe priority.
+    # After MAX_COOLDOWN_CYCLES total cycles they are permanently retired to evicted.
+    cooldown:        Dict[str, dict]         = field(default_factory=dict)
+    cooldown_count:  Dict[str, int]          = field(default_factory=dict)  # total cycles per pid
     phase_logs:      List[dict]              = field(default_factory=list)
     phase:           int                     = 0
     total_steps:     int                     = 0
@@ -256,19 +272,58 @@ class Curriculum:
             for pid, s in self.active.items()
         ])
 
+    def _freeze(self, pid: str, problem: dict, reason: str, cooldown_phases: int,
+                initial_strikes: int) -> None:
+        """Send a problem to the cooldown queue instead of permanently retiring it.
+
+        After MAX_COOLDOWN_CYCLES total cycles the problem is permanently retired.
+        'reason' is for logging only.
+        """
+        cycles_done = self.cooldown_count.get(pid, 0)
+        if cycles_done >= MAX_COOLDOWN_CYCLES:
+            self.evicted.add(pid)
+        else:
+            self.cooldown[pid] = {
+                "problem":         problem,
+                "thaw_phase":      self.phase + cooldown_phases,
+                "initial_strikes": initial_strikes,
+                "reason":          reason,
+            }
+
     def refresh(self, model, tokenizer, out_dir: Path) -> None:
         self.phase += 1
         t0 = time.monotonic()
         print(f"\n[Phase {self.phase} refresh] Scoring {self.size()} active problems…")
 
-        # Score active set
+        # ── Step 0: thaw problems whose cooldown has elapsed ─────────────────────
+        thawed_pids = [pid for pid, info in self.cooldown.items()
+                       if info["thaw_phase"] <= self.phase]
+        n_thaw_reserve = n_thaw_retired = 0
+        for pid in thawed_pids:
+            info  = self.cooldown.pop(pid)
+            count = self.cooldown_count.get(pid, 0) + 1
+            self.cooldown_count[pid] = count
+            if count >= MAX_COOLDOWN_CYCLES:
+                self.evicted.add(pid)
+                n_thaw_retired += 1
+            else:
+                self.reserve.append(info["problem"])
+                self.reserve_strikes[pid] = info["initial_strikes"]
+                n_thaw_reserve += 1
+        if thawed_pids:
+            print(
+                f"[Phase {self.phase} refresh] Thawed {len(thawed_pids)} from cooldown "
+                f"(→ reserve: {n_thaw_reserve}, → retired: {n_thaw_retired})"
+            )
+
+        # ── Score active set ──────────────────────────────────────────────────────
         pass_rates = score_problems_batched(
             [(pid, s.problem) for pid, s in self.active.items()],
             model, tokenizer,
             label="active",
         )
 
-        # Evict
+        # ── Evict → cooldown (not permanent) ─────────────────────────────────────
         evict_sat, evict_unreach = [], []
         for pid, state in list(self.active.items()):
             pr = pass_rates.get(pid, 0.0)
@@ -281,35 +336,58 @@ class Curriculum:
             else:
                 state.consecutive_zero_evals = 0
 
-        evicted_ids = set(evict_sat + evict_unreach)
-        for pid in evicted_ids:
-            self.evicted.add(pid)
+        for pid in evict_sat:
+            self._freeze(pid, self.active[pid].problem, "saturated",
+                         SATURATE_COOLDOWN, initial_strikes=2)
+            del self.active[pid]
+        for pid in evict_unreach:
+            self._freeze(pid, self.active[pid].problem, "unreachable",
+                         UNREACHABLE_COOLDOWN, initial_strikes=1)
             del self.active[pid]
 
-        # Replenish from reserve.
-        # Weighted sampling: each consecutive 0/N probe halves selection probability
-        # (PROBE_DECAY). After RESERVE_PATIENCE consecutive failures the problem is
-        # removed — it's unreachable at the model's current capability level and
-        # re-probing it wastes rollouts. Problems that eventually score > 0 get
-        # their strike count reset, so they'll re-enter rotation naturally if the
-        # model regresses (unlikely) or if they were just unlucky on early probes.
+        # ── Replenish from reserve ────────────────────────────────────────────────
+        #
+        # Probe weighting: base_signal × PROBE_DECAY^strikes
+        #   Tier-1 (Goldilocks overflow): base_signal = 1 − |baseline_pr − 0.5| / 0.5
+        #     → problems close to p=0.5 at baseline get higher probe priority.
+        #     → near-saturated overflow (baseline pr ≈ 0.875) gets low priority since
+        #       they've likely already saturated after a phase or two of training.
+        #   Tier-2 (unreachable at baseline, no pass_rate field): base_signal = 0.4
+        #     → conservative but nonzero — the model may have improved enough.
+        #
+        # Promotion: only Goldilocks hits (MIN_PROMOTE_PASS_RATE ≤ pr < SATURATE_THRESHOLD)
+        # are eligible. Hits sorted by |pr − 0.5| so highest-signal problems are promoted
+        # first when supply exceeds demand.
+        def probe_weight(p: dict) -> float:
+            strikes     = self.reserve_strikes.get(p["id"], 0)
+            baseline_pr = p.get("pass_rate")  # present for tier-1, absent for tier-2
+            if baseline_pr is not None:
+                signal = max(1.0 - abs(baseline_pr - 0.5) / 0.5, 0.1)
+            else:
+                signal = 0.4
+            return signal * (PROBE_DECAY ** strikes)
+
         needed = self.target_size - self.size()
         added  = []
         if needed > 0 and self.reserve:
-            # Hard-remove problems that have exceeded patience
-            exhausted = {p["id"] for p in self.reserve
-                         if self.reserve_strikes.get(p["id"], 0) >= RESERVE_PATIENCE}
-            if exhausted:
-                self.reserve = [p for p in self.reserve if p["id"] not in exhausted]
-                for pid in exhausted:
-                    self.evicted.add(pid)
+            # Send reserve-exhausted problems to cooldown instead of hard-deleting
+            exhausted_probs = [p for p in self.reserve
+                               if self.reserve_strikes.get(p["id"], 0) >= RESERVE_PATIENCE]
+            if exhausted_probs:
+                exhausted_ids = {p["id"] for p in exhausted_probs}
+                self.reserve = [p for p in self.reserve if p["id"] not in exhausted_ids]
+                for prob in exhausted_probs:
+                    pid = prob["id"]
+                    self._freeze(pid, prob, "probe_exhausted",
+                                 SATURATE_COOLDOWN, initial_strikes=2)
                     self.reserve_strikes.pop(pid, None)
-                print(f"[Phase {self.phase} refresh] Removed {len(exhausted)} exhausted reserve problems")
+                print(
+                    f"[Phase {self.phase} refresh] "
+                    f"Froze {len(exhausted_probs)} probe-exhausted reserve problems"
+                )
 
             if self.reserve:
-                # Weighted sample — problems with more strikes are less likely chosen
-                weights = [PROBE_DECAY ** self.reserve_strikes.get(p["id"], 0)
-                           for p in self.reserve]
+                weights = [probe_weight(p) for p in self.reserve]
                 n_probe = min(MAX_PROBE, len(self.reserve))
                 probe   = random.choices(self.reserve, weights=weights, k=n_probe)
                 probe   = list({p["id"]: p for p in probe}.values())  # deduplicate
@@ -321,16 +399,40 @@ class Curriculum:
                     label="probe",
                 )
 
-                to_add = {}
+                # Collect Goldilocks hits; sort by |pr − 0.5| to promote best signal first
+                goldilocks_hits: List[Tuple[float, str, dict]] = []
+                refreeze: List[Tuple[str, dict]] = []
+
                 for prob in probe:
                     pid = prob["id"]
                     pr  = scored.get(pid, 0.0)
-                    if pr == 0.0:
+
+                    if pr >= SATURATE_THRESHOLD:
+                        # Still saturated — re-freeze rather than clogging reserve
+                        refreeze.append((pid, prob))
+                    elif pr == 0.0:
                         self.reserve_strikes[pid] = self.reserve_strikes.get(pid, 0) + 1
                     else:
-                        self.reserve_strikes[pid] = 0  # reset on any success
-                    if len(to_add) < needed and 0.0 < pr < 1.0:
-                        to_add[pid] = prob
+                        self.reserve_strikes[pid] = 0  # reset on any nonzero score
+                        if pr >= MIN_PROMOTE_PASS_RATE:
+                            goldilocks_hits.append((pr, pid, prob))
+
+                # Remove re-saturated probes from reserve, freeze them
+                if refreeze:
+                    refreeze_ids = {pid for pid, _ in refreeze}
+                    self.reserve = [r for r in self.reserve if r["id"] not in refreeze_ids]
+                    for pid, prob in refreeze:
+                        self._freeze(pid, prob, "saturated",
+                                     SATURATE_COOLDOWN, initial_strikes=2)
+                        self.reserve_strikes.pop(pid, None)
+
+                # Promote highest-signal Goldilocks first (ascending |pr − 0.5|)
+                goldilocks_hits.sort(key=lambda x: abs(x[0] - 0.5))
+                to_add: Dict[str, dict] = {}
+                for pr, pid, prob in goldilocks_hits:
+                    if len(to_add) >= needed:
+                        break
+                    to_add[pid] = prob
 
                 added_ids = set(to_add.keys())
                 self.reserve = [r for r in self.reserve if r["id"] not in added_ids]
@@ -357,6 +459,7 @@ class Curriculum:
             "added":             len(added),
             "active_size":       n_active,
             "reserve_size":      len(self.reserve),
+            "cooldown_size":     len(self.cooldown),
             "goldilocks_frac":   round(goldilocks_frac, 3),
             "pass_rates":        pass_rates,
             "refresh_time_sec":  round(elapsed, 1),
@@ -365,8 +468,9 @@ class Curriculum:
 
         print(
             f"[Phase {self.phase} refresh] "
-            f"evicted(sat={len(evict_sat)} unreach={len(evict_unreach)})  "
-            f"added={len(added)}  active={n_active}  reserve={len(self.reserve)}  "
+            f"frozen(sat={len(evict_sat)} unreach={len(evict_unreach)})  "
+            f"added={len(added)}  active={n_active}  "
+            f"reserve={len(self.reserve)}  cooldown={len(self.cooldown)}  "
             f"goldilocks={n_goldilocks}/{n_active} ({goldilocks_frac:.1%})  "
             f"({elapsed:.0f}s)"
         )
@@ -381,6 +485,8 @@ class Curriculum:
             "target_size":     self.target_size,
             "evicted":         list(self.evicted),
             "reserve_strikes": self.reserve_strikes,
+            "cooldown":        self.cooldown,
+            "cooldown_count":  self.cooldown_count,
             "active": [
                 {
                     "id":                    pid,
@@ -413,6 +519,8 @@ class Curriculum:
             reserve=state["reserve"],
             reserve_strikes=state.get("reserve_strikes", {}),
             evicted=set(state["evicted"]),
+            cooldown=state.get("cooldown", {}),
+            cooldown_count=state.get("cooldown_count", {}),
             phase_logs=state["phase_logs"],
             phase=state["phase"],
             total_steps=state["total_steps"],
@@ -421,7 +529,7 @@ class Curriculum:
         print(
             f"  Resumed from phase {c.phase}  "
             f"({c.size()} active, {len(c.reserve)} reserve, "
-            f"{c.total_steps} steps done)"
+            f"{len(c.cooldown)} in cooldown, {c.total_steps} steps done)"
         )
         return c
 
@@ -551,7 +659,8 @@ def build_curriculum(model_key: str, static: bool = False) -> Curriculum:
                 continue
             if pr == 0.0:
                 reserve.append(p)
-                reserve_strikes[p["id"]] = 1   # tier 2: start at 1 strike (half priority)
+                # tier-2 priority handled by probe_weight(): no pass_rate field → signal=0.4
+                # No need to initialize reserve_strikes — default strikes=0 is correct.
 
         print(f"  Excluded {saturated_excluded} base-model-saturated problems from reserve")
 
