@@ -81,6 +81,10 @@ PROBE_DECAY          = 0.5    # each probe failure halves sampling probability
 GEN_MAX_NEW_TOKENS = 768   # 512 risks cutting off L3 chain-of-thought before <answer> tag
 GEN_TEMPERATURE    = 0.8
 GEN_TOP_P          = 0.95
+HELDOUT_BATCH             = 8   # problems per greedy generate call — batching amortizes H100
+                                 # overhead; 8 fits comfortably in VRAM with 7-8B models
+STATIC_GOLDILOCKS_SAMPLE  = 64  # problems to sample from static active set each phase
+                                 # to measure Goldilocks fraction (key diagnostic)
 
 SYSTEM_PROMPT = (
     "You are a concise mathematical reasoning assistant. "
@@ -577,35 +581,53 @@ def eval_heldout(model, tokenizer, heldout_path: Path, phase: int, out_dir: Path
     with open(heldout_path) as f:
         problems = json.load(f)
 
-    print(f"\n[Phase {phase}] Held-out eval ({len(problems)} problems, greedy)…")
+    print(f"\n[Phase {phase}] Held-out eval ({len(problems)} problems, greedy, batch={HELDOUT_BATCH})…")
 
     model.eval()
     pass_rates: Dict[str, float] = {}
     t_start = time.monotonic()
 
+    # Batch greedy decoding: process HELDOUT_BATCH problems simultaneously.
+    # Greedy is naturally batchable (no per-rollout branching) — this uses the
+    # H100's throughput rather than running 210 sequential single-sequence calls.
     with torch.inference_mode():
-        for i, p in enumerate(problems):
-            prompt = build_prompt(p["problem"])
-            enc    = tokenizer(prompt, return_tensors="pt",
-                               truncation=True, max_length=1024).to(model.device)
-            input_len = enc["input_ids"].shape[1]
+        for batch_start in range(0, len(problems), HELDOUT_BATCH):
+            batch = problems[batch_start : batch_start + HELDOUT_BATCH]
+            prompts = [build_prompt(p["problem"]) for p in batch]
 
-            out  = model.generate(
+            enc = tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=1024,
+            ).to(model.device)
+
+            # Track each sequence's original prompt length for trimming the output
+            prompt_lens = enc["attention_mask"].sum(dim=1).tolist()
+
+            out = model.generate(
                 **enc,
                 max_new_tokens=GEN_MAX_NEW_TOKENS,
-                do_sample=False,          # greedy — no temperature, no sampling
+                do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
-            text   = tokenizer.decode(out[0][input_len:], skip_special_tokens=True)
-            reward = score(text, p["answer"])
-            pass_rates[p["id"]] = float(reward)
 
+            for j, p in enumerate(batch):
+                text   = tokenizer.decode(
+                    out[j][int(prompt_lens[j]):], skip_special_tokens=True
+                )
+                reward = score(text, p["answer"])
+                pass_rates[p["id"]] = float(reward)
+
+            done    = min(batch_start + HELDOUT_BATCH, len(problems))
             elapsed = time.monotonic() - t_start
-            rate    = (i + 1) / elapsed
-            eta     = (len(problems) - i - 1) / rate if rate > 0 else 0
+            rate    = done / elapsed
+            eta     = (len(problems) - done) / rate if rate > 0 else 0
+            correct_in_batch = sum(pass_rates.get(p["id"], 0) for p in batch)
             print(
-                f"  [heldout] {i+1:>3}/{len(problems)}  "
-                f"{p['id']:<35}  {'✓' if reward else '✗'}  eta {eta:.0f}s",
+                f"  [heldout] {done:>3}/{len(problems)}  "
+                f"batch correct: {correct_in_batch}/{len(batch)}  eta {eta:.0f}s",
                 flush=True,
             )
 
@@ -639,10 +661,68 @@ def eval_heldout(model, tokenizer, heldout_path: Path, phase: int, out_dir: Path
     )
 
 
+# ── Static Goldilocks fraction logging ─────────────────────────────────────────
+
+def log_static_goldilocks(
+    curriculum: "Curriculum",
+    model,
+    tokenizer,
+    phase: int,
+    out_dir: Path,
+) -> None:
+    """
+    Sample STATIC_GOLDILOCKS_SAMPLE problems from the static active set and score
+    them with pass@8 to measure the current Goldilocks fraction.
+
+    This is the key diagnostic for the static baseline: as training progresses,
+    saturated problems accumulate and the Goldilocks fraction collapses — showing
+    that the static run is wasting an increasing fraction of compute on zero-gradient
+    problems. Without this measurement, the compute waste is invisible.
+
+    Logs one JSON line per phase to static_goldilocks_log.jsonl.
+    """
+    active_list = list(curriculum.active.items())
+    n_sample    = min(STATIC_GOLDILOCKS_SAMPLE, len(active_list))
+    sample      = random.sample(active_list, n_sample)
+
+    print(f"\n[Phase {phase}] Static Goldilocks probe ({n_sample} problems)…")
+    pass_rates = score_problems_batched(
+        [(pid, state.problem) for pid, state in sample],
+        model, tokenizer,
+        label="static-probe",
+    )
+
+    n_gold = sum(1 for pr in pass_rates.values() if 0.0 < pr < 1.0)
+    n_sat  = sum(1 for pr in pass_rates.values() if pr >= SATURATE_THRESHOLD)
+    n_un   = sum(1 for pr in pass_rates.values() if pr == 0.0)
+    frac   = n_gold / n_sample if n_sample > 0 else 0.0
+
+    log = {
+        "phase":            phase,
+        "sample_size":      n_sample,
+        "n_goldilocks":     n_gold,
+        "n_saturated":      n_sat,
+        "n_unreachable":    n_un,
+        "goldilocks_frac":  round(frac, 3),
+        "pass_rates":       pass_rates,
+    }
+
+    log_path = out_dir / "static_goldilocks_log.jsonl"
+    with open(log_path, "a") as f:
+        f.write(json.dumps(log) + "\n")
+
+    print(
+        f"[Phase {phase}] Static Goldilocks fraction: "
+        f"{n_gold}/{n_sample} ({frac:.1%})  "
+        f"[sat={n_sat} unreach={n_un}]"
+    )
+
+
 # ── Training loop ──────────────────────────────────────────────────────────────
 
 def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
-    out_dir = args.output_dir / args.model
+    run_label = "static" if args.static else "dynamic"
+    out_dir = args.output_dir / f"{args.model}_{run_label}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     while True:
@@ -709,7 +789,11 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
             eval_heldout(model, tokenizer, args.heldout, curriculum.phase + 1, out_dir)
 
         if args.static:
-            # Static baseline: skip curriculum refresh, train on same problems forever
+            # Static baseline: skip curriculum refresh, train on same problems forever.
+            # But sample-score a subset to track Goldilocks fraction over time — this
+            # is the key diagnostic showing gradient quality collapsing as the fixed
+            # set saturates. Without it, the compute waste is invisible in the logs.
+            log_static_goldilocks(curriculum, model, tokenizer, curriculum.phase + 1, out_dir)
             curriculum.phase += 1
             curriculum._save_state(out_dir)
         else:
@@ -729,7 +813,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", choices=list(MODEL_REGISTRY.keys()),
                         default="qwen-2.5-7b")
-    parser.add_argument("--max-steps",  type=int,  default=480)  # 6 phases × 80 steps
+    parser.add_argument("--max-steps",  type=int,  default=640)  # 8 phases × 80 steps
     parser.add_argument("--output-dir", type=Path, default=Path("checkpoints"))
     parser.add_argument("--resume",  action="store_true",
                         help="Resume from saved curriculum_state.json")

@@ -128,7 +128,8 @@ Reserve patience:         4 consecutive 0/8 probes → hard-remove
 Probe decay:              0.5× per consecutive failure
 Reserve tier 1:           Goldilocks overflow (known gradient, strikes=0)
 Reserve tier 2:           Unreachable at baseline (strikes=1, half probe priority)
-Total training steps:     480 (6 phases)
+Total training steps:     640 (8 phases)
+Static probe sample:      64 problems/phase sampled from 630 for Goldilocks fraction logging
 ```
 
 ### Seed selection: sort by proximity to pass_rate=0.5
@@ -162,21 +163,56 @@ Problems that repeatedly fail probing aren't instantly removed — their selecti
 
 ### Compute overhead analysis (per phase, 80 steps)
 
-| Component | Forward passes | % of training |
-|---|---|---|
-| Training (80 steps × batch 8 × 8 rollouts) | 5,120 | — |
-| Active scoring (150 problems × pass@8) | 1,200 | 23% |
-| Reserve probing (40 candidates × pass@8) | 320 | 6% |
-| Held-out eval (210 problems × **greedy**) | 210 | 4% |
-| **Total overhead** | **1,730** | **34%** |
+| Component | Forward passes | % of training | Notes |
+|---|---|---|---|
+| Training (80 steps × batch 8 × 8 rollouts) | 5,120 | — | |
+| Active scoring (150 problems × pass@8) | 1,200 | 23% | dynamic only |
+| Reserve probing (40 candidates × pass@8) | 320 | 6% | dynamic only |
+| Held-out eval (210 problems × **greedy**) | 210 | 4% | both conditions |
+| Static probe (64 problems × pass@8) | 512 | 10% | static only |
+| **Dynamic total overhead** | **1,730** | **34%** | |
+| **Static total overhead** | **722** | **14%** | (probe only + held-out) |
 
 Held-out eval uses **greedy decoding** (one deterministic forward pass per problem):
 - Standard MATH benchmark protocol — directly comparable to published results
 - Measures the model's best answer, not a noisy stochastic sample → cleaner curve
-- SE of mean over 210 problems ≈ 3.5%, sufficient to track trends across 6 phases
+- SE of mean over 210 problems ≈ 3.5%, sufficient to track trends across 8 phases
 - 4% overhead vs 16% (pass@4) or 33% (pass@8)
+- Batched: 8 problems per `generate()` call, amortizing H100 launch overhead
 
-Curriculum scoring still uses pass@8 because individual eviction decisions need precision. The held-out curve only needs to track a trend — 6 data points over 480 steps, not per-problem diagnostics. Both eval types happen at the same moment: end of every 80-step phase.
+Curriculum scoring still uses pass@8 because individual eviction decisions need precision. The held-out curve only needs to track a trend — 8 data points over 640 steps, not per-problem diagnostics. Both eval types happen at the same moment: end of every 80-step phase.
+
+### Static Goldilocks fraction logging
+
+The static run doesn't update its curriculum, so there's no refresh() call to log gradient quality. Without explicit measurement, the entire point of the comparison — that static training wastes increasing compute on zero-gradient problems — is invisible in the logs.
+
+Each phase, 64 problems are sampled uniformly from the static 630-problem active set and scored with pass@8. The resulting `goldilocks_frac` is logged to `static_goldilocks_log.jsonl`. This sampling (not full scoring) adds 10% overhead to the static run and provides enough signal to show the collapse. The expected pattern:
+- **Phase 1**: fraction ≈ 32.7% (Qwen) or 59% (Llama) — same as pre-eval baseline
+- **Later phases**: fraction rises slightly as unreachable problems are learned, then collapses as easy ones saturate to 1.0
+- **By phase 6+**: fraction may be well below 20%, meaning >80% of the batch generates zero gradient
+
+This curve is the smoking gun for the dynamic curriculum argument.
+
+### Time estimate (H100)
+
+A single 640-step run (one model, one condition) takes approximately:
+
+| Component | Time |
+|---|---|
+| Model load + LoRA setup | ~5 min |
+| Phase-0 base eval (greedy, 210 problems) | ~10 min |
+| Per phase: training (80 steps, batch 16) | ~15-20 min |
+| Per phase: active scoring (dynamic, 150×8) | ~12 min |
+| Per phase: reserve probing (dynamic, 40×8) | ~3 min |
+| Per phase: held-out greedy eval (210) | ~3 min |
+| Per phase: static Goldilocks probe (64×8) | ~5 min |
+| **Per phase total (dynamic)** | **~33-38 min** |
+| **Per phase total (static)** | **~23-28 min** |
+| **Total, 8 phases, dynamic** | **~4.5-5.5 hours** |
+| **Total, 8 phases, static** | **~3-4 hours** |
+| **All 4 runs (2 models × 2 conditions)** | **~15-19 hours** |
+
+Running dynamic and static in parallel on the same model (two H100s) cuts wall-clock time roughly in half for each model pair. The numbers above assume single H100, sequential runs.
 
 ---
 
@@ -226,7 +262,7 @@ On the held-out 210-problem eval, after the same number of total gradient steps:
 - **Acceptable result**: Dynamic reaches higher held-out accuracy at the same step count (quality win)
 - **Weak but still meaningful**: Goldilocks fraction stays high in dynamic and collapses in static, demonstrating the mechanism — even if held-out accuracy gap is small at 400 steps
 
-The clearest proof would be a learning curve where static plateaus (because most of its Goldilocks problems saturate and the gradient vanishes) while dynamic keeps improving by discovering harder problems from the reserve. 400 total training steps may not be enough to see a strong divergence — 800-1200 steps would give a cleaner result if budget allows.
+The clearest proof would be a learning curve where static plateaus (because most of its Goldilocks problems saturate and the gradient vanishes) while dynamic keeps improving by discovering harder problems from the reserve. 640 total training steps (8 phases) should be enough to see the Goldilocks fraction diverge between conditions — if budget allows, 1200 steps would give a cleaner curve. The `static_goldilocks_log.jsonl` diagnostic is the key artifact: even if held-out accuracy gaps are small at 640 steps, a collapsing Goldilocks fraction in the static run proves the mechanism is real.
 
 ---
 
@@ -247,9 +283,14 @@ The clearest proof would be a learning curve where static plateaus (because most
 | Step | Status |
 |---|---|
 | Build 630-problem L1L2L3 training pool | Done |
-| Build 210-problem held-out set | Done |
+| Build 210-problem held-out set (seed=99, 0 overlap, 0 duplicates) | Done |
 | Pass@8 pre-eval (Qwen-2.5-7B) | Done — 206 Goldilocks, 161 unreachable |
 | Pass@8 pre-eval (Llama-3-8B) | Done — 372 Goldilocks, 154 unreachable |
 | Export Goldilocks inventories | Done |
+| Phase-0 base model eval (greedy, 210 problems) | Runs automatically on first launch |
 | Dynamic training run × 2 models | Pending |
 | Static training run × 2 models | Pending |
+
+**Data artifacts ready:** `data/profile_dataset_L1L2L3.json` (630 problems), `data/heldout_eval.json` (210), `data/goldilocks_qwen-2.5-7b.json` (206), `data/goldilocks_llama-3-8b.json` (372), `data/evaluation_results_full.json` (full pass@8 scores).
+
+**Output artifacts (generated during training):** `checkpoints/<model>_dynamic/heldout_results.jsonl`, `checkpoints/<model>_static/heldout_results.jsonl`, `checkpoints/<model>_dynamic/curriculum_state.json`, `checkpoints/<model>_static/static_goldilocks_log.jsonl`.

@@ -23,9 +23,10 @@ pip install -q \
     "accelerate>=0.28.0" \
     "datasets>=2.18.0"
 
-# flash-attn: install manually if you want it (takes ~15min to compile).
-# The training script auto-detects it and falls back to eager attention if absent.
-# To install: pip install flash-attn --no-build-isolation
+# flash-attn: ~2-3× attention speedup on H100. Compile takes ~10-15 min but
+# subsequent runs skip it (wheel is cached). Required for best H100 utilization.
+echo "==> Installing flash-attn (may take ~10-15 min to compile; cached on reruns)…"
+pip install -q flash-attn --no-build-isolation
 
 # ── Verify GPU ─────────────────────────────────────────────────────────────────
 echo "==> GPU:"
@@ -59,12 +60,13 @@ from pathlib import Path
 files = [
     'data/goldilocks_llama-3-8b.json',
     'data/goldilocks_qwen-2.5-7b.json',
-    'data/profile_dataset_L1L2.json',
+    'data/profile_dataset_L1L2L3.json',
+    'data/heldout_eval.json',
 ]
 ok = True
 for p in files:
     exists = Path(p).exists()
-    print(f'  [{'OK' if exists else 'MISSING'}] {p}')
+    print(f'  [{\"OK\" if exists else \"MISSING\"}] {p}')
     if not exists: ok = False
 if not ok:
     raise SystemExit('Missing data files — cannot start training')
@@ -72,8 +74,19 @@ if not ok:
 
 # ── Launch ─────────────────────────────────────────────────────────────────────
 echo "==> Starting GRPO training on H100…"
-python3 src/train_grpo.py \
-    --model "$MODEL" \
-    --max-steps 400
+echo ""
+echo "Run this for dynamic curriculum (default):"
+echo "  python3 src/train_grpo.py --model $MODEL"
+echo ""
+echo "Run this for static baseline:"
+echo "  python3 src/train_grpo.py --model $MODEL --static"
+echo ""
+echo "Both use --max-steps 640 (8 phases × 80 steps) by default."
+echo "Add --resume to recover from a killed job."
+echo ""
 
-echo "==> Done. Checkpoints in checkpoints/$MODEL/"
+# Uncomment one of these to launch automatically:
+# python3 src/train_grpo.py --model "$MODEL"
+# python3 src/train_grpo.py --model "$MODEL" --static
+
+echo "==> Setup complete. Launch training with the commands above."
