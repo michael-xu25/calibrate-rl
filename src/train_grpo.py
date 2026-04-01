@@ -110,23 +110,43 @@ ANSWER_REMINDER = (
 # ── Reward function ────────────────────────────────────────────────────────────
 
 def extract_answer(text: str) -> Optional[str]:
+    # Tier 1: explicit <answer> tag (model is prompted to use this)
     m = re.search(r"<answer>(.*?)</answer>", text, re.IGNORECASE | re.DOTALL)
     if m:
         return m.group(1).strip()
+    # Tier 2: \boxed{} — handles one level of nesting (covers most MATH answers)
     m = re.search(r"\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}", text)
     if m:
         return m.group(1).strip()
+    # Tier 3: last bare number in the completion (rare; fires when model skips both formats)
     candidates = re.findall(r"(?<![/\w])(-?\d+(?:[./]\d+)?)(?![/\w])", text)
     return candidates[-1] if candidates else None
 
 
 def normalize(raw: str) -> str:
-    s = raw.strip().strip("$")
+    s = raw.strip()
+    # Strip all LaTeX math delimiters (strip("$") only removes one from each end)
+    s = s.replace("$", "")
+    # Normalize fraction variants so \dfrac{6}{11} == \frac{6}{11}
+    s = re.sub(r"\\[dt]frac\{", r"\\frac{", s)
+    # Convert simple numeric fractions to a/b so \frac{6}{11} == 6/11
+    # Handles integers and decimals; complex fracs (nested) stay as \frac and must match verbatim
+    s = re.sub(r"\\frac\{(-?[\d.]+)\}\{(-?[\d.]+)\}", r"\1/\2", s)
+    # Remove LaTeX thin/medium/thick spacing commands that appear in formatted numbers
+    # e.g. 10,\!080 (thin space) or 10,\,080
+    s = re.sub(r"\\[,;!: ]", "", s)
+    s = s.replace("\\!", "")   # explicit \! not covered by the class above
+    # Strip \text{...} → inner content (e.g. \text{ ways} → ways)
     s = re.sub(r"\\text\{([^}]*)\}", r"\1", s)
+    # Strip \left / \right bracket decorators
     s = re.sub(r"\\(?:left|right)[(\[{)\]}|.]", "", s)
+    # Remove thousands-separator commas: 10,080 → 10080
     s = re.sub(r"(\d),(\d{3})(?!\d)", r"\1\2", s)
+    # Collapse trailing .0 on integers: 42.0 → 42
     s = re.sub(r"^(-?\d+)\.0+$", r"\1", s)
-    return s.lower().strip()
+    # Remove all whitespace — spaces in LaTeX math are decorative, so "9 \pi" == "9\pi"
+    s = re.sub(r"\s+", "", s)
+    return s.lower()
 
 
 def score(completion: str, ground_truth: str) -> float:
@@ -142,11 +162,20 @@ def reward_fn(completions: List[str], answer: List[str], **kwargs) -> List[float
 
 # ── Prompt builder ─────────────────────────────────────────────────────────────
 
-def build_prompt(problem_text: str) -> str:
-    return (
-        f"<|system|>\n{SYSTEM_PROMPT}\n"
-        f"<|user|>\n{problem_text}{ANSWER_REMINDER}\n"
-        f"<|assistant|>\n"
+def build_prompt(problem_text: str, tokenizer) -> str:
+    """Format a problem using the model's native chat template.
+
+    Uses tokenizer.apply_chat_template() so Qwen 2.5 gets <|im_start|> tokens
+    and Llama 3 gets <|start_header_id|> tokens — each model sees the exact
+    format it was instruction-tuned on. The hardcoded <|system|> / <|user|>
+    placeholder format is NOT valid special tokens for either model.
+    """
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": problem_text + ANSWER_REMINDER},
+    ]
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
     )
 
 
@@ -174,7 +203,7 @@ def score_problems_batched(
 
     with torch.inference_mode():
         for i, (pid, prob) in enumerate(items):
-            prompt   = build_prompt(prob["problem"])
+            prompt   = build_prompt(prob["problem"], tokenizer)
             enc      = tokenizer(
                 prompt, return_tensors="pt", truncation=True, max_length=1024
             )
@@ -265,10 +294,10 @@ class Curriculum:
     def size(self) -> int:
         return len(self.active)
 
-    def to_dataset(self) -> Dataset:
+    def to_dataset(self, tokenizer) -> Dataset:
         return Dataset.from_list([
             {
-                "prompt":     build_prompt(s.problem["problem"]),
+                "prompt":     build_prompt(s.problem["problem"], tokenizer),
                 "answer":     s.problem["answer"],
                 "problem_id": pid,
             }
@@ -682,7 +711,26 @@ def build_curriculum(model_key: str, static: bool = False) -> Curriculum:
     reserve        = [p for p in overflow]
     reserve_strikes = {}   # tier 1: strikes=0 (default, not set)
 
-    if RESERVE_POOL_PATH.exists() and EVAL_RESULTS_PATH.exists():
+    if not RESERVE_POOL_PATH.exists():
+        print(f"  WARNING: Reserve pool not found at {RESERVE_POOL_PATH} — reserve is Goldilocks overflow only")
+    elif not EVAL_RESULTS_PATH.exists():
+        # eval_results_full.json is gitignored (9MB) and won't exist on fresh Lightning AI runs.
+        # Fallback: add ALL pool problems not already in active/reserve as tier-2 candidates.
+        # Saturated ones will be re-frozen immediately on first probe (pr >= SATURATE_THRESHOLD);
+        # unreachable ones get strike=1. This is noisier than the eval-guided version but
+        # prevents Qwen's reserve (only 56 overflow) from starving the curriculum.
+        print(
+            f"  WARNING: {EVAL_RESULTS_PATH} not found — adding ALL pool problems as tier-2 reserve.\n"
+            f"  Saturated problems will be re-frozen on first probe. Upload eval_results_full.json\n"
+            f"  to {EVAL_RESULTS_PATH} for cleaner tier-2 filtering."
+        )
+        with open(RESERVE_POOL_PATH) as f:
+            full_pool = json.load(f)
+        reserve_ids = {r["id"] for r in reserve}
+        for p in full_pool:
+            if p["id"] not in active_ids and p["id"] not in reserve_ids:
+                reserve.append(p)
+    else:
         with open(RESERVE_POOL_PATH) as f:
             full_pool = json.load(f)
         with open(EVAL_RESULTS_PATH) as f:
@@ -704,7 +752,6 @@ def build_curriculum(model_key: str, static: bool = False) -> Curriculum:
             if pr == 0.0:
                 reserve.append(p)
                 # tier-2 priority handled by probe_weight(): no pass_rate field → signal=0.4
-                # No need to initialize reserve_strikes — default strikes=0 is correct.
 
         print(f"  Excluded {saturated_excluded} base-model-saturated problems from reserve")
 
@@ -746,7 +793,7 @@ def eval_heldout(model, tokenizer, heldout_path: Path, phase: int, out_dir: Path
     with torch.inference_mode():
         for batch_start in range(0, len(problems), HELDOUT_BATCH):
             batch = problems[batch_start : batch_start + HELDOUT_BATCH]
-            prompts = [build_prompt(p["problem"]) for p in batch]
+            prompts = [build_prompt(p["problem"], tokenizer) for p in batch]
 
             enc = tokenizer(
                 prompts,
@@ -914,15 +961,19 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
             max_steps=steps_this_phase,
             per_device_train_batch_size=8,
             gradient_accumulation_steps=2,
-            learning_rate=2e-5,   # 2e-5 > 1e-5: need enough model movement per phase
-                                  # to trigger saturation events within a 480-step budget
+            learning_rate=2e-5,   # 2e-5 > conservative 1e-5: need enough model movement
+                                  # per phase to trigger saturation events within budget
             warmup_steps=min(5, steps_this_phase // 4) if curriculum.phase == 0 else 0,
             logging_steps=5,
             save_strategy="no",
             num_generations=N_ROLLOUTS_TRAIN,
             max_completion_length=GEN_MAX_NEW_TOKENS,
             temperature=GEN_TEMPERATURE,
-            beta=0.04,            # KL penalty coefficient (GRPO paper default)
+            beta=0.02,            # KL penalty: 0.02 (halved from 0.04 default) to let
+                                  # the policy drift faster, making saturation events
+                                  # visible within 640 steps. Safe with exact-match
+                                  # binary rewards — reward hacking requires actually
+                                  # solving the problem, not fooling a soft judge.
             use_vllm=False,
             report_to="none",
             bf16=True,
@@ -954,7 +1005,7 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
         trainer = GRPOTrainer(
             model=model,
             args=grpo_config,
-            train_dataset=curriculum.to_dataset(),
+            train_dataset=curriculum.to_dataset(tokenizer),
             reward_funcs=reward_fn,
             processing_class=tokenizer,
             callbacks=[LossLogger()],
@@ -1036,7 +1087,7 @@ def main() -> None:
         "lora_r":              32,
         "lora_alpha":          64,
         "learning_rate":       2e-5,
-        "beta_kl":             0.04,
+        "beta_kl":             0.02,
         "gen_max_new_tokens":  GEN_MAX_NEW_TOKENS,
         "gen_temperature":     GEN_TEMPERATURE,
         "started_at":          datetime.datetime.utcnow().isoformat() + "Z",

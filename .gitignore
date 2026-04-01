@@ -5,19 +5,10 @@ __pycache__/
 .venv/
 venv/
 
-# Model checkpoints (too large for git)
+# Model checkpoints — adapter weights are GBs, regenerate from training run
 checkpoints/
 
-# Large intermediate eval files — not needed for training, rebuild with run_evaluation.py
-data/evaluation_results*.json
-data/preeval_*.json
-data/probe_*.json
-logs/
-
-# Training inputs (goldilocks inventories, pool, heldout) are tracked —
-# they're needed on Lightning AI and are small enough for git (< 500KB each)
-
-# Environment
+# Secrets
 .env
 
 # IDE
@@ -26,3 +17,6 @@ logs/
 
 # OS
 .DS_Store
+
+# Business docs
+*.docx
