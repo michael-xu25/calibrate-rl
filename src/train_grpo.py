@@ -481,27 +481,31 @@ class Curriculum:
 
         elapsed = time.monotonic() - t0
 
-        # Goldilocks fraction: fraction of active problems with 0 < pass_rate < 1
-        # This is the core diagnostic — if it collapses, the active set is full of
-        # saturated/unreachable problems and gradients are near zero.
+        # Goldilocks fraction: fraction of active problems with 0 < pass_rate < 1.
+        # Mean gradient signal: mean(2p(1-p)) over ALL active problems (including 0
+        # and 1). This is the expected advantage magnitude per rollout, averaged across
+        # the batch. For static it declines as saturated/unreachable problems accumulate;
+        # for dynamic it stays high because those problems are cycled out.
         n_active = self.size()
-        n_goldilocks = sum(
-            1 for pid in self.active
-            if 0.0 < pass_rates.get(pid, 0.0) < 1.0
-        )
+        all_pr   = [pass_rates.get(pid, 0.0) for pid in self.active]
+        n_goldilocks    = sum(1 for p in all_pr if 0.0 < p < 1.0)
         goldilocks_frac = n_goldilocks / n_active if n_active > 0 else 0.0
+        mean_grad_signal = (
+            sum(2 * p * (1 - p) for p in all_pr) / n_active if n_active > 0 else 0.0
+        )
 
         log = {
-            "phase":             self.phase,
-            "evict_saturated":   len(evict_sat),
-            "evict_unreachable": len(evict_unreach),
-            "added":             len(added),
-            "active_size":       n_active,
-            "reserve_size":      len(self.reserve),
-            "cooldown_size":     len(self.cooldown),
-            "goldilocks_frac":   round(goldilocks_frac, 3),
-            "pass_rates":        pass_rates,
-            "refresh_time_sec":  round(elapsed, 1),
+            "phase":              self.phase,
+            "evict_saturated":    len(evict_sat),
+            "evict_unreachable":  len(evict_unreach),
+            "added":              len(added),
+            "active_size":        n_active,
+            "reserve_size":       len(self.reserve),
+            "cooldown_size":      len(self.cooldown),
+            "goldilocks_frac":    round(goldilocks_frac, 3),
+            "mean_grad_signal":   round(mean_grad_signal, 4),
+            "pass_rates":         pass_rates,
+            "refresh_time_sec":   round(elapsed, 1),
         }
         self.phase_logs.append(log)
 
@@ -511,6 +515,7 @@ class Curriculum:
             f"added={len(added)}  active={n_active}  "
             f"reserve={len(self.reserve)}  cooldown={len(self.cooldown)}  "
             f"goldilocks={n_goldilocks}/{n_active} ({goldilocks_frac:.1%})  "
+            f"grad_signal={mean_grad_signal:.3f}  "
             f"({elapsed:.0f}s)"
         )
 
@@ -840,19 +845,24 @@ def log_static_goldilocks(
         label="static-probe",
     )
 
-    n_gold = sum(1 for pr in pass_rates.values() if 0.0 < pr < 1.0)
-    n_sat  = sum(1 for pr in pass_rates.values() if pr >= SATURATE_THRESHOLD)
-    n_un   = sum(1 for pr in pass_rates.values() if pr == 0.0)
+    all_pr = list(pass_rates.values())
+    n_gold = sum(1 for p in all_pr if 0.0 < p < 1.0)
+    n_sat  = sum(1 for p in all_pr if p >= SATURATE_THRESHOLD)
+    n_un   = sum(1 for p in all_pr if p == 0.0)
     frac   = n_gold / n_sample if n_sample > 0 else 0.0
+    mean_grad_signal = (
+        sum(2 * p * (1 - p) for p in all_pr) / n_sample if n_sample > 0 else 0.0
+    )
 
     log = {
-        "phase":            phase,
-        "sample_size":      n_sample,
-        "n_goldilocks":     n_gold,
-        "n_saturated":      n_sat,
-        "n_unreachable":    n_un,
-        "goldilocks_frac":  round(frac, 3),
-        "pass_rates":       pass_rates,
+        "phase":             phase,
+        "sample_size":       n_sample,
+        "n_goldilocks":      n_gold,
+        "n_saturated":       n_sat,
+        "n_unreachable":     n_un,
+        "goldilocks_frac":   round(frac, 3),
+        "mean_grad_signal":  round(mean_grad_signal, 4),
+        "pass_rates":        pass_rates,
     }
 
     log_path = out_dir / "static_goldilocks_log.jsonl"
@@ -921,12 +931,33 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
             remove_unused_columns=False,
         )
 
+        # Callback: write loss + reward metrics to a persistent JSONL after every
+        # logging_steps. This survives session disconnects (unlike stdout) and gives
+        # a step-level training signal to compare against held-out accuracy curves.
+        loss_log_path = out_dir / "train_loss.jsonl"
+
+        from transformers import TrainerCallback
+
+        class LossLogger(TrainerCallback):
+            def on_log(self, _args, state, control, logs=None, **kwargs):
+                if logs is None:
+                    return
+                entry = {
+                    "step":          state.global_step + curriculum.total_steps,
+                    "phase":         curriculum.phase + 1,
+                    **{k: v for k, v in logs.items()
+                       if isinstance(v, (int, float))},
+                }
+                with open(loss_log_path, "a") as f:
+                    f.write(json.dumps(entry) + "\n")
+
         trainer = GRPOTrainer(
             model=model,
             args=grpo_config,
             train_dataset=curriculum.to_dataset(),
             reward_funcs=reward_fn,
             processing_class=tokenizer,
+            callbacks=[LossLogger()],
         )
         trainer.train()
         curriculum.total_steps += steps_this_phase
@@ -978,6 +1009,43 @@ def main() -> None:
     run_label = "static" if args.static else "dynamic"
     out_dir   = args.output_dir / f"{args.model}_{run_label}"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write run_config.json so every checkpoint directory is self-documenting.
+    # Critical for comparing runs later — hyperparameters are pinned at launch time,
+    # not reconstructed from memory.
+    import datetime
+    run_config = {
+        "model":               args.model,
+        "model_id":            model_id,
+        "condition":           run_label,
+        "max_steps":           args.max_steps,
+        "steps_per_phase":     STEPS_PER_PHASE,
+        "n_rollouts_train":    N_ROLLOUTS_TRAIN,
+        "n_rollouts_score":    N_ROLLOUTS_SCORE,
+        "saturate_threshold":  SATURATE_THRESHOLD,
+        "unreachable_patience":UNREACHABLE_PATIENCE,
+        "target_curriculum":   TARGET_CURRICULUM,
+        "min_curriculum":      MIN_CURRICULUM,
+        "max_probe":           MAX_PROBE,
+        "reserve_patience":    RESERVE_PATIENCE,
+        "probe_decay":         PROBE_DECAY,
+        "min_promote_pass_rate": MIN_PROMOTE_PASS_RATE,
+        "saturate_cooldown":   SATURATE_COOLDOWN,
+        "unreachable_cooldown":UNREACHABLE_COOLDOWN,
+        "max_cooldown_cycles": MAX_COOLDOWN_CYCLES,
+        "lora_r":              32,
+        "lora_alpha":          64,
+        "learning_rate":       2e-5,
+        "beta_kl":             0.04,
+        "gen_max_new_tokens":  GEN_MAX_NEW_TOKENS,
+        "gen_temperature":     GEN_TEMPERATURE,
+        "started_at":          datetime.datetime.utcnow().isoformat() + "Z",
+        "resumed":             args.resume,
+    }
+    config_path = out_dir / "run_config.json"
+    if not config_path.exists() or not args.resume:
+        config_path.write_text(json.dumps(run_config, indent=2))
+        print(f"  Run config → {config_path}")
 
     model, tokenizer = load_model_and_tokenizer(model_id)
 

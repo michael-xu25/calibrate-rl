@@ -15,11 +15,15 @@ echo "==> Model: $MODEL"
 
 # ── Install dependencies ───────────────────────────────────────────────────────
 echo "==> Installing dependencies…"
+# Versions pinned to avoid silent API breakage:
+#   trl 0.17.x: uses reward_funcs= and processing_class= (our API)
+#   trl <0.9:   uses reward_function= and tokenizer= (breaks silently)
+#   transformers 4.47+: required for Qwen2.5 and Llama3 tokenizers
 pip install -q \
     "torch>=2.2.0" \
-    "transformers>=4.40.0" \
-    "trl>=0.8.6" \
-    "peft>=0.10.0" \
+    "transformers>=4.47.0" \
+    "trl>=0.17.0,<0.18.0" \
+    "peft>=0.14.0" \
     "accelerate>=0.28.0" \
     "datasets>=2.18.0"
 
@@ -27,6 +31,24 @@ pip install -q \
 # Requires a C++ compiler and CUDA headers in the image. If your environment
 # supports it, run once manually: pip install flash-attn --no-build-isolation
 # The training script auto-detects it and falls back to eager attention if absent.
+
+# ── Verify TRL API ─────────────────────────────────────────────────────────────
+echo "==> Checking TRL API compatibility…"
+python3 -c "
+import trl, inspect
+sig = inspect.signature(trl.GRPOTrainer.__init__)
+params = set(sig.parameters)
+ok = True
+for needed in ('reward_funcs', 'processing_class'):
+    if needed not in params:
+        print(f'  MISSING param: {needed} — wrong TRL version ({trl.__version__})')
+        ok = False
+    else:
+        print(f'  [OK] {needed}')
+if not ok:
+    raise SystemExit('TRL version incompatible. Run: pip install \"trl>=0.17.0,<0.18.0\"')
+print(f'  TRL version: {trl.__version__}')
+"
 
 # ── Verify GPU ─────────────────────────────────────────────────────────────────
 echo "==> GPU:"
