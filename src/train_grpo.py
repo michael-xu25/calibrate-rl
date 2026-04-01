@@ -72,7 +72,10 @@ TARGET_CURRICULUM    = 150    # active problems to maintain. Chosen so each prob
                                # Below 128 → gradient correlation increases (same problems
                                # repeat too often); above 200 → presentations drop below 3×
                                # and eviction decisions become noise-driven.
-MIN_CURRICULUM       = 16     # stop training if pool falls below this
+MIN_CURRICULUM       = 8      # warn (but keep training) below this; hard stop only if
+                               # pool drops to 0. A pool of 8 still fills one full batch
+                               # and provides useful gradient — stopping prematurely because
+                               # of reserve exhaustion is worse than training on a small pool.
 MAX_PROBE            = 40     # reserve candidates to probe per refresh
 RESERVE_PATIENCE     = 4      # consecutive 0/N probe fails → send to cooldown
 PROBE_DECAY          = 0.5    # each probe failure halves sampling probability
@@ -387,44 +390,71 @@ class Curriculum:
                 )
 
             if self.reserve:
-                weights = [probe_weight(p) for p in self.reserve]
-                n_probe = min(MAX_PROBE, len(self.reserve))
-                probe   = random.choices(self.reserve, weights=weights, k=n_probe)
-                probe   = list({p["id"]: p for p in probe}.values())  # deduplicate
-
-                print(f"[Phase {self.phase} refresh] Probing {len(probe)} reserve candidates…")
-                scored = score_problems_batched(
-                    [(p["id"], p) for p in probe],
-                    model, tokenizer,
-                    label="probe",
-                )
-
-                # Collect Goldilocks hits; sort by |pr − 0.5| to promote best signal first
+                # Probe up to two rounds if the first round undershoots.
+                # Round 1: probe max(MAX_PROBE, needed*2) candidates — scales budget
+                #   to the actual deficit rather than a fixed ceiling.
+                # Round 2: only if round 1 filled < 50% of needed. Probes a fresh
+                #   weighted sample from the remaining reserve, capped at needed*2.
+                #   Avoids a half-empty active set after unusually large eviction phases.
                 goldilocks_hits: List[Tuple[float, str, dict]] = []
-                refreeze: List[Tuple[str, dict]] = []
+                already_probed: set = set()
 
-                for prob in probe:
-                    pid = prob["id"]
-                    pr  = scored.get(pid, 0.0)
+                for probe_round in range(2):
+                    still_needed = needed - len(goldilocks_hits)
+                    if still_needed <= 0:
+                        break
+                    # Only do round 2 if round 1 filled < 50% of deficit
+                    if probe_round == 1 and len(goldilocks_hits) >= needed * 0.5:
+                        break
+                    if not self.reserve:
+                        break
 
-                    if pr >= SATURATE_THRESHOLD:
-                        # Still saturated — re-freeze rather than clogging reserve
-                        refreeze.append((pid, prob))
-                    elif pr == 0.0:
-                        self.reserve_strikes[pid] = self.reserve_strikes.get(pid, 0) + 1
-                    else:
-                        self.reserve_strikes[pid] = 0  # reset on any nonzero score
-                        if pr >= MIN_PROMOTE_PASS_RATE:
-                            goldilocks_hits.append((pr, pid, prob))
+                    # Exclude already-probed problems from this round's candidates
+                    candidates = [p for p in self.reserve if p["id"] not in already_probed]
+                    if not candidates:
+                        break
 
-                # Remove re-saturated probes from reserve, freeze them
-                if refreeze:
-                    refreeze_ids = {pid for pid, _ in refreeze}
-                    self.reserve = [r for r in self.reserve if r["id"] not in refreeze_ids]
-                    for pid, prob in refreeze:
-                        self._freeze(pid, prob, "saturated",
-                                     SATURATE_COOLDOWN, initial_strikes=2)
-                        self.reserve_strikes.pop(pid, None)
+                    weights  = [probe_weight(p) for p in candidates]
+                    n_probe  = min(max(MAX_PROBE, still_needed * 2), len(candidates))
+                    probe    = random.choices(candidates, weights=weights, k=n_probe)
+                    probe    = list({p["id"]: p for p in probe}.values())  # deduplicate
+                    already_probed.update(p["id"] for p in probe)
+
+                    round_label = "probe" if probe_round == 0 else "probe-r2"
+                    print(
+                        f"[Phase {self.phase} refresh] "
+                        f"Probing {len(probe)} reserve candidates "
+                        f"(round {probe_round + 1}, need {still_needed})…"
+                    )
+                    scored = score_problems_batched(
+                        [(p["id"], p) for p in probe],
+                        model, tokenizer,
+                        label=round_label,
+                    )
+
+                    refreeze: List[Tuple[str, dict]] = []
+                    for prob in probe:
+                        pid = prob["id"]
+                        pr  = scored.get(pid, 0.0)
+
+                        if pr >= SATURATE_THRESHOLD:
+                            # Still saturated — re-freeze rather than clogging reserve
+                            refreeze.append((pid, prob))
+                        elif pr == 0.0:
+                            self.reserve_strikes[pid] = self.reserve_strikes.get(pid, 0) + 1
+                        else:
+                            self.reserve_strikes[pid] = 0  # reset on any nonzero score
+                            if pr >= MIN_PROMOTE_PASS_RATE:
+                                goldilocks_hits.append((pr, pid, prob))
+
+                    # Remove re-saturated probes from reserve, freeze them
+                    if refreeze:
+                        refreeze_ids = {pid for pid, _ in refreeze}
+                        self.reserve = [r for r in self.reserve if r["id"] not in refreeze_ids]
+                        for pid, prob in refreeze:
+                            self._freeze(pid, prob, "saturated",
+                                         SATURATE_COOLDOWN, initial_strikes=2)
+                            self.reserve_strikes.pop(pid, None)
 
                 # Promote highest-signal Goldilocks first (ascending |pr − 0.5|)
                 goldilocks_hits.sort(key=lambda x: abs(x[0] - 0.5))
@@ -433,6 +463,15 @@ class Curriculum:
                     if len(to_add) >= needed:
                         break
                     to_add[pid] = prob
+
+                if len(to_add) < needed:
+                    shortfall = needed - len(to_add)
+                    print(
+                        f"[Phase {self.phase} refresh] "
+                        f"Reserve shortfall: filled {len(to_add)}/{needed} slots "
+                        f"({shortfall} slots temporarily empty — "
+                        f"will recover as cooldown thaws or model improves)"
+                    )
 
                 added_ids = set(to_add.keys())
                 self.reserve = [r for r in self.reserve if r["id"] not in added_ids]
@@ -835,13 +874,16 @@ def run_training(model, tokenizer, curriculum: Curriculum, args) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     while True:
+        if curriculum.size() == 0:
+            print(f"\n[Phase {curriculum.phase + 1}] Active pool empty — stopping.")
+            break
+
         if curriculum.size() < MIN_CURRICULUM:
             print(
-                f"\n[Phase {curriculum.phase + 1}] Pool below minimum "
+                f"\n[Phase {curriculum.phase + 1}] WARNING: pool low "
                 f"({curriculum.size()} < {MIN_CURRICULUM}). "
-                f"Natural ceiling reached — stopping."
+                f"Continuing — cooldown may thaw problems next phase."
             )
-            break
 
         if curriculum.total_steps >= args.max_steps:
             print(f"\nReached max_steps ({args.max_steps}). Stopping.")
